@@ -1,0 +1,67 @@
+{
+  "id": 75194,
+  "url": "https://www.tvmaze.com/shows/75194/beyond-the-gates",
+  "name": "Beyond the Gates",
+  "type": "Scripted",
+  "language": "English",
+  "genres": [
+    "Drama",
+    "Family"
+  ],
+  "status": "Running",
+  "runtime": 60,
+  "averageRuntime": 60,
+  "premiered": "2025-02-24",
+  "ended": null,
+  "officialSite": "https://www.cbs.com/shows/beyond-the-gates/",
+  "schedule": {
+    "time": "14:00",
+    "days": [
+      "Monday",
+      "Tuesday",
+      "Wednesday",
+      "Thursday",
+      "Friday"
+    ]
+  },
+  "rating": {
+    "average": 5.2
+  },
+  "weight": 96,
+  "network": {
+    "id": 2,
+    "name": "CBS",
+    "country": {
+      "name": "United States",
+      "code": "US",
+      "timezone": "America/New_York"
+    },
+    "officialSite": "https://www.cbs.com/"
+  },
+  "webChannel": null,
+  "dvdCountry": null,
+  "externals": {
+    "tvrage": null,
+    "thetvdb": 449045,
+    "imdb": "tt32125269"
+  },
+  "image": {
+    "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/593/1482540.jpg",
+    "original": "https://static.tvmaze.com/uploads/images/original_untouched/593/1482540.jpg"
+  },
+  "summary": "<p><b>Beyond the Gates </b>is set in a leafy Maryland suburb just outside of Washington D.C., and in one the most affluent African American counties in the United States. Here you'll find a posh gated community with winding tree-lined streets and luxurious mansions to call home. At the center of this community are the Duprees, a powerful and prestigious multi-generational family that is the very definition of Black royalty. But behind these pristine walls and lush, manicured gardens are juicy secrets and scandals waiting to be uncovered. And those that live outside these gates are watching closely. These are the places where our characters live, love, work and play. Those who have \"made it\" and those who haven't are all trying to navigate life … and some with more grace than others.</p>",
+  "updated": 1792220775,
+  "_links": {
+    "self": {
+      "href": "https://api.tvmaze.com/shows/75194"
+    },
+    "previousepisode": {
+      "href": "https://api.tvmaze.com/episodes/3777491",
+      "name": "Episode 391"
+    },
+    "nextepisode": {
+      "href": "https://api.tvmaze.com/episodes/3783613",
+      "name": "Episode 392"
+    }
+  }
+}

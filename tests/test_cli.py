@@ -1,0 +1,129 @@
+"""CLI: добавление, выбор из кандидатов, список с переводом в зону пользователя."""
+
+from __future__ import annotations
+
+import io
+
+import pytest
+
+from series_watcher.cli import EXIT_ERROR, EXIT_NEEDS_CHOICE, EXIT_OK, main
+from series_watcher.tvmaze import TvMazeClient
+
+from conftest import load_fixture
+
+
+@pytest.fixture
+def cli(monkeypatch, tmp_path, fake_tvmaze, sleeps):
+    monkeypatch.chdir(tmp_path)
+
+    def factory(**kwargs) -> TvMazeClient:
+        kwargs["transport"] = fake_tvmaze.transport()
+        kwargs["sleep"] = sleeps.append
+        kwargs["rate_limit"] = (0, 10.0)
+        return TvMazeClient(**kwargs)
+
+    monkeypatch.setattr("series_watcher.cli.TvMazeClient", factory)
+
+    def run(*argv: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        code = main(["--db", str(tmp_path / "test.db"), *argv], stdout=out, stderr=err)
+        return code, out.getvalue(), err.getvalue()
+
+    return run
+
+
+def show_payload(tvmaze_id: int, name: str) -> dict:
+    return dict(load_fixture("show"), id=tvmaze_id, name=name)
+
+
+def add_ambiguous_candidates(fake_tvmaze) -> None:
+    fake_tvmaze.add(
+        "/search/shows?q=dark knight",
+        [
+            {"score": 0.8, "show": show_payload(11, "Dark")},
+            {"score": 0.5, "show": show_payload(12, "Dark Matter")},
+        ],
+    )
+    fake_tvmaze.add("/shows/12", show_payload(12, "Dark Matter"))
+    fake_tvmaze.add("/shows/12/episodes", load_fixture("episodes"))
+
+
+def test_add_prints_show_and_credit(cli):
+    code, out, _ = cli("add", "Severance")
+    assert code == EXIT_OK
+    assert "Добавлен: Severance" in out
+    assert "эпизодов в базе: 19" in out
+    assert "https://www.tvmaze.com" in out
+
+
+def test_add_without_query_or_id_is_an_error(cli):
+    code, _, err = cli("add")
+    assert code == EXIT_ERROR
+    assert "название сериала или --id" in err
+
+
+def test_unknown_show_reports_failure(cli, fake_tvmaze):
+    fake_tvmaze.add("/search/shows?q=zzzqqq", [])
+    code, _, err = cli("add", "zzzqqq")
+    assert code == EXIT_ERROR
+    assert "zzzqqq" in err
+
+
+def test_ambiguous_query_asks_for_pick(cli, fake_tvmaze):
+    add_ambiguous_candidates(fake_tvmaze)
+    code, _, err = cli("add", "dark knight")
+    assert code == EXIT_NEEDS_CHOICE
+    assert "1. Dark (Scripted, Running, Apple TV)" in err
+    assert "2. Dark Matter (Scripted, Running, Apple TV)" in err
+    assert "--pick N" in err
+
+
+def test_pick_finishes_the_add(cli, fake_tvmaze):
+    add_ambiguous_candidates(fake_tvmaze)
+    code, out, _ = cli("add", "dark knight", "--pick", "2")
+    assert code == EXIT_OK
+    assert "Добавлен: Dark Matter" in out
+
+
+def test_empty_list_suggests_add(cli):
+    code, out, _ = cli("list")
+    assert code == EXIT_OK
+    assert "Список пуст" in out
+    assert "TELEGRAM_BOT_TOKEN" in out
+
+
+def test_list_shows_next_episode_in_user_timezone(cli):
+    cli("add", "--id", "75194")
+
+    _, moscow, _ = cli("--tz", "Europe/Moscow", "list")
+    _, new_york, _ = cli("--tz", "America/New_York", "list")
+    _, utc, _ = cli("--tz", "UTC", "list")
+
+    assert "19.10.2026 21:00" in moscow
+    assert "19.10.2026 14:00" in new_york
+    assert "19.10.2026 18:00" in utc
+    assert "время: Europe/Moscow" in moscow
+
+
+def test_list_keeps_shows_without_planned_episodes(cli):
+    cli("add", "Severance")
+    code, out, _ = cli("list")
+    assert code == EXIT_OK
+    assert "Severance" in out
+    assert "следующий эпизод: не запланирован" in out
+    assert "всего эпизодов: 19" in out
+
+
+def test_list_says_what_is_disabled(cli):
+    cli("add", "Severance")
+    _, out, _ = cli("list")
+    assert "Что отключено:" in out
+    assert "нет TMDB_API_KEY" in out
+    assert "нет JUSTWATCH_API_KEY" in out
+
+
+def test_broken_timezone_fails_before_network(cli, fake_tvmaze):
+    code, _, err = cli("--tz", "Mars/Olympus", "list")
+    assert code == EXIT_ERROR
+    assert "Mars/Olympus" in err
+    assert fake_tvmaze.calls == []
