@@ -525,6 +525,34 @@ def test_about_without_name_asks(parts):
     assert "О каком сериале рассказать" in api.sent[0]["text"]
 
 
+def test_asked_count_is_honoured(parts, fake_tvmaze):
+    from conftest import pin_schedule
+
+    watcher, fake, _ = parts
+    watcher.add_show_by_id(75194)
+    pin_schedule(fake)
+    bot, api = make_bot(watcher, [text_update("посоветуй топ-3")])
+
+    bot.poll_once()
+
+    lines = [line for line in api.sent[0]["text"].splitlines() if line.startswith("•")]
+    assert len(lines) <= 3
+
+
+def test_short_answer_says_how_many_found(parts, fake_tvmaze):
+    """Просили пять, нашлось два — говорим об этом прямо, а не молча сокращаем."""
+    from conftest import pin_schedule
+
+    watcher, fake, _ = parts
+    watcher.add_show_by_id(75194)
+    pin_schedule(fake)
+    bot, api = make_bot(watcher, [text_update("посоветуй штук 5")])
+
+    bot.poll_once()
+
+    assert "просили 5" in api.sent[0]["text"]
+
+
 def test_tracking_button_subscribes_to_a_recommendation(parts, fake_tvmaze):
     """Подписаться можно прямо из подборки: кнопка «Отслеживать» шлёт `add <id>`."""
     watcher, fake, _ = parts

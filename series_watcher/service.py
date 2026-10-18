@@ -47,6 +47,9 @@ from .schedule import ScheduleError, ScheduleSource
 #: Канал один: сервис рассчитан на одного пользователя в Telegram.
 NOTIFY_CHANNEL = TELEGRAM_CHANNEL
 
+#: Сколько рекомендаций показывать, если не сказано иное.
+DEFAULT_RECOMMEND_LIMIT = 5
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -604,12 +607,15 @@ class SeriesWatcher:
         if not self.db.list_shows():
             return self.cold_start_reply()
         focus = self._focus_show(intent.show)
-        items = self.recommend(focus=focus)
+        asked = intent.limit or DEFAULT_RECOMMEND_LIMIT
+        items = self.recommend(limit=asked, focus=focus)
         if focus is not None and not items:
             return Reply(text=plain([f"Похожего на «{focus.name}» не нашлось."]))
         if not items:
             return Reply(text=plain(["Подходящих сериалов не нашлось."]))
         title = f"Похожее на «{focus.name}»:" if focus is not None else "Похожее на ваш список:"
+        if len(items) < asked:
+            title += f" (просили {asked}, нашлось {len(items)})"
         lines: list[str] = []
         buttons = []
         for item in items:

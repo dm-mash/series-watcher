@@ -48,8 +48,12 @@ SCHEMA: Mapping[str, Any] = {
         "show": {"type": "string", "description": "название сериала, если он назван"},
         "season": {"type": ["integer", "null"], "description": "номер сезона, если назван"},
         "number": {"type": ["integer", "null"], "description": "номер эпизода, если назван"},
+        "limit": {
+            "type": ["integer", "null"],
+            "description": "сколько сериалов просят: «штук 5», «топ-3»",
+        },
     },
-    "required": ["intent", "confidence", "show", "season", "number"],
+    "required": ["intent", "confidence", "show", "season", "number", "limit"],
     "additionalProperties": False,
 }
 
@@ -80,7 +84,10 @@ _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
         ),
     ),
     (WHAT_NEW, re.compile(r"(что нового|новые серии|что вышл|вышел ли|новости)", re.I)),
-    (RECOMMEND, re.compile(r"(посоветуй|порекоменд|что посмотреть|похожие на)", re.I)),
+    (
+        RECOMMEND,
+        re.compile(r"(посоветуй|порекоменд|что посмотреть|похожие на|похожее на|топ[-\s]?\d)", re.I),
+    ),
     (WHERE_TO_WATCH, re.compile(r"(где смотреть|где\s+его\s+стрим|где стримят|где смотр|где найти|можно посмотреть)", re.I)),
     (UNSUBSCRIBE, re.compile(r"(перестань|удали|убери|отпишись|отслеживать не надо|больше не следи)", re.I)),
     (MARK_WATCHED, re.compile(r"(посмотрел|просмотрел|отметь|уже видел|посмотрела)", re.I)),
@@ -105,6 +112,10 @@ _SHOW_AFTER = re.compile(
 # «2 сезон 5 серию» и «сезон 2, серия 5» — номера стоят с обеих сторон от слова.
 # Номера сезона бывают и двухзначные, и «номер года» — у ежедневных сериалов.
 _SIMILAR_RE = re.compile(r"похож", re.I)
+#: «штук пять», «5 штук», «топ-3», «дай три» — просят разное число.
+_COUNT_RE = re.compile(
+    r"(?:штук(?:ами|ах|ам)?|топ[-\s]?)\s*(\d{1,2})|(\d{1,2})\s*штук", re.I
+)
 _SEASON = re.compile(r"(?:сезон|season)\s*(\d{1,4})|(\d{1,4})\s*(?:сезон|season)", re.I)
 _NUMBER = re.compile(
     r"(?:серия|серию|сериал|эпизод|episode)\s*(\d{1,3})|(\d{1,3})\s*(?:серия|серию|эпизод)",
@@ -119,6 +130,7 @@ class Intent:
     show: str | None = None
     season: int | None = None
     number: int | None = None
+    limit: int | None = None
     reason: str = ""
 
     @property
@@ -167,6 +179,7 @@ def _intent_from_payload(data: Any, *, reason: str) -> Intent:
         show=show.strip() if isinstance(show, str) and show.strip() else None,
         season=_as_int(data.get("season")),
         number=_as_int(data.get("number")),
+        limit=_as_int(data.get("limit")),
         reason=reason,
     )
 
@@ -188,6 +201,7 @@ def rules(text: str) -> Intent:
                 show=_show_after(phrase, name),
                 season=_season(phrase),
                 number=_number(phrase),
+                limit=_count(phrase),
                 reason="rules",
             )
     return Intent(name=UNKNOWN, confidence=0.0, reason="нет маркеров")
@@ -206,7 +220,9 @@ def _show_after(phrase: str, name: str) -> str | None:
     match = _SHOW_AFTER.search(phrase)
     if not match:
         return None
-    value = match.group(1).strip(" ?!.,«»\"'")
+    # «похожее на Slow Horses, штук 5» — название кончилось до запятой.
+    value = re.split(r"[,;]|\bштук|\bтоп[-\s]|\bдай\b|\bещё\b", match.group(1))[0]
+    value = value.strip(" ?!.,«»\"'")
     return value or None
 
 
@@ -216,6 +232,14 @@ def _season(phrase: str) -> int | None:
 
 def _number(phrase: str) -> int | None:
     return _first_group(_NUMBER.search(phrase))
+
+
+def _count(phrase: str) -> int | None:
+    """Сколько просят: «штук 5» или «5 штук». Больше 20 — явно не про сериалы."""
+    value = _first_group(_COUNT_RE.search(phrase))
+    if value is None or not 1 <= value <= 20:
+        return None
+    return value
 
 
 def _first_group(match: re.Match[str] | None) -> int | None:

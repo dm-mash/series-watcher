@@ -169,3 +169,26 @@ def test_prompt_tells_the_model_when_to_say_unknown():
     assert "list" in SYSTEM_PROMPT
     assert "unknown" in SYSTEM_PROMPT
     assert "подставлять соседнее намерение хуже" in SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("phrase", "limit"),
+    [
+        ("порекомендуй похожее на slow horses, штук 5", 5),
+        ("дай топ-3", 3),
+        ("посоветуй 2 штуки", 2),
+        ("посоветуй что-нибудь", None),
+    ],
+)
+def test_count_is_parsed_from_the_phrase(phrase, limit):
+    assert rules(phrase).limit == limit
+
+
+def test_absurd_count_is_ignored():
+    assert rules("посоветуй 100 штук").limit is None
+
+
+def test_count_does_not_swallow_the_title():
+    intent = rules("порекомендуй похожее на slow horses, штук 5")
+    assert intent.show == "slow horses"
+    assert intent.limit == 5
