@@ -18,10 +18,11 @@ from conftest import load_fixture
 @pytest.fixture
 def show(tmp_path):
     """Сериал ровно в том виде, в каком его видит сервис."""
+    from series_watcher.schedule import TvMazeSchedule
     from series_watcher.tvmaze import parse_show
 
     with Database(tmp_path / "test.db") as db:
-        return db.upsert_show(parse_show(load_fixture("show")))
+        return db.upsert_show("tvmaze", TvMazeSchedule(None)._show(parse_show(load_fixture("show"))))
 
 
 def test_custom_source_without_file_is_unavailable(tmp_path, show):
@@ -117,7 +118,7 @@ def _write(tmp_path: Path, show) -> Path:
     path = tmp_path / "where.json"
     path.write_text(
         json.dumps(
-            {str(show.tvmaze_id): [{"provider": "Кинопоиск", "url": "https://example.tv/x"}]}
+            {str(show.key.external_id): [{"provider": "Кинопоиск", "url": "https://example.tv/x"}]}
         ),
         encoding="utf-8",
     )

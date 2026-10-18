@@ -45,6 +45,8 @@ class EpisodeRecord:
     aired_at: datetime | None = None
     runtime: int | None = None
     summary: str | None = None
+    #: id эпизода у источника, если источник его отдаёт
+    external_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,14 @@ class WorkCredit:
 
 #: Роли, которые мы вообще слушаем. Остальное (актёры, монтаж, звук) — шум.
 INTERESTING_ROLES = frozenset({"creator", "director", "writer", "producer"})
+
+
+@dataclass(frozen=True)
+class ScheduleEntry:
+    """Что идёт в эфире: сериал и его эпизод."""
+
+    show: ShowRecord
+    episode: EpisodeRecord
 
 
 @dataclass(frozen=True)

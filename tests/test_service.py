@@ -11,6 +11,7 @@ from series_watcher.db import Database
 from series_watcher.llm import LLMClient
 from series_watcher.nlu import Intent
 from series_watcher.service import SeriesWatcher
+from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
 from conftest import load_fixture
@@ -28,7 +29,7 @@ def watcher(tmp_path, fake_tvmaze, sleeps) -> SeriesWatcher:
         sleep=sleeps.append,
         rate_limit=(0, 10.0),
     )
-    yield SeriesWatcher(config=Config(), db=db, tvmaze=client)
+    yield SeriesWatcher(config=Config(), db=db, source=TvMazeSchedule(client))
     client.close()
     db.close()
 
@@ -57,7 +58,7 @@ def test_exact_name_match_is_added_without_asking(watcher):
     assert result.status == "added"
     assert result.show.name == "Severance"
     assert result.episodes == len(load_fixture("episodes"))
-    assert watcher.db.list_shows()[0].thetvdb_id == 371980
+    assert "tvdb:371980" in {i.key for i in watcher.db.list_shows()[0].identifiers}
 
 
 def test_article_and_case_in_query_still_match(watcher, fake_tvmaze):
@@ -71,7 +72,7 @@ def test_ambiguous_query_returns_candidates(watcher, fake_tvmaze):
     add_ambiguous_candidates(fake_tvmaze)
     result = watcher.add_show("dark knight")
     assert result.status == "needs_choice"
-    assert [item.show.name for item in result.candidates] == ["Dark", "Dark Matter", "Dark Angel"]
+    assert [item.show.title for item in result.candidates] == ["Dark", "Dark Matter", "Dark Angel"]
     assert watcher.db.list_shows() == []
 
 
@@ -128,11 +129,11 @@ def test_remove_and_refresh(watcher):
     watcher.add_show("Severance")
     show = watcher.db.list_shows()[0]
 
-    refreshed = watcher.refresh_show(show.tvmaze_id)
+    refreshed = watcher.refresh_show(show.key.external_id)
     assert refreshed.status == "exists"
     assert watcher.refresh_show(999_999).status == "not_found"
-    assert watcher.remove_show(show.tvmaze_id) is True
-    assert watcher.remove_show(show.tvmaze_id) is False
+    assert watcher.remove_show(show.key.external_id) is True
+    assert watcher.remove_show(show.key.external_id) is False
     assert watcher.db.list_shows() == []
 
 
@@ -143,7 +144,7 @@ def test_list_shows_orders_by_next_episode(watcher):
     items = watcher.list_shows(now=NOW)
     assert [item.show.name for item in items] == ["Beyond the Gates", "Severance"]
     assert items[0].next_episode is not None
-    assert items[0].next_episode.airdate == "2026-10-19"
+    assert items[0].next_episode.aired_at == datetime(2026, 10, 19, 18, 0, tzinfo=timezone.utc)
     assert items[1].next_episode is None
 
 

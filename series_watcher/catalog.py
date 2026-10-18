@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from .llm import LLMClient, LLMError
-from .tvmaze import TvMazeShow
+from .models import ShowRecord
 
 TITLE_SCHEMA: Mapping[str, Any] = {
     "type": "object",
@@ -112,17 +112,18 @@ def title_from_description(description: str, *, llm: LLMClient | None) -> str | 
 
 def pick_show(
     description: str,
-    candidates: Sequence[TvMazeShow],
+    candidates: Sequence[ShowRecord],
     *,
     llm: LLMClient | None,
     floor: float = 0.6,
-) -> TvMazeShow | None:
+) -> ShowRecord | None:
     """Выбрать сериал из выдачи поиска, когда запрос неоднозначный."""
     client = _client(llm)
     if client is None or not candidates:
         return None
     listing = "\n".join(
-        f"{show.id}. {show.name} ({', '.join(part for part in (show.kind, show.status, show.network) if part)})"
+        f"{show.external_id}. {show.title} "
+        f"({', '.join(part for part in (show.kind, show.status, show.network) if part)})"
         for show in candidates
     )
     try:
@@ -143,9 +144,12 @@ def pick_show(
     except (TypeError, ValueError):
         confidence = 0.0
     chosen = data.get("id")
-    if not isinstance(chosen, int) or confidence < floor:
+    if chosen is None:
         return None
-    return next((show for show in candidates if show.id == chosen), None)
+    if confidence < floor:
+        return None
+    key = str(chosen)
+    return next((show for show in candidates if show.external_id == key), None)
 
 
 def short_summary(text: str | None, *, llm: LLMClient | None) -> str | None:

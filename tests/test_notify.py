@@ -11,22 +11,20 @@ from series_watcher.config import Config
 from series_watcher.db import TELEGRAM_CHANNEL, Database
 from series_watcher.notify import Notifier, footer
 
-from conftest import FakeTelegram, load_fixture
-from series_watcher.tvmaze import parse_episode
+from conftest import FakeTelegram, load_fixture, store_show
+from series_watcher.models import EpisodeRecord
 
+NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 TEXT = "Severance — S01E01\n" + footer()
 
 
 @pytest.fixture
 def db(tmp_path) -> Database:
     database = Database(tmp_path / "test.db")
-    from series_watcher.tvmaze import parse_show
-
-    payload = dict(load_fixture("show"))
-    show = database.upsert_show(parse_show(payload))
+    show = store_show(database, load_fixture("show"))
     database.upsert_episodes(
         show.id,
-        [parse_episode(item, 44933) for item in load_fixture("episodes")[:1]],
+        [EpisodeRecord(season=1, number=1, name="Good News About Hell", aired_at=NOW)],
     )
     yield database
     database.close()

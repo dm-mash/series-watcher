@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -17,7 +17,6 @@ from typing import Iterable, Sequence
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS shows (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    tvmaze_id       INTEGER NOT NULL UNIQUE,
     name            TEXT    NOT NULL,
     kind            TEXT,
     status          TEXT,
@@ -30,23 +29,29 @@ CREATE TABLE IF NOT EXISTS shows (
     summary         TEXT,
     url             TEXT,
     image           TEXT,
-    thetvdb_id      INTEGER,
-    imdb_id         TEXT,
     rating          REAL,
     source_updated  INTEGER,
     added_at        TEXT    NOT NULL,
     checked_at      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS identifiers (
+    show_id     INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
+    source      TEXT    NOT NULL,
+    external_id TEXT    NOT NULL,
+    PRIMARY KEY (source, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_identifiers_show ON identifiers(show_id);
+
 CREATE TABLE IF NOT EXISTS episodes (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     show_id            INTEGER NOT NULL REFERENCES shows(id) ON DELETE CASCADE,
-    tvmaze_episode_id  INTEGER,
+    external_id        TEXT,
     season             INTEGER NOT NULL,
     number             INTEGER NOT NULL,
     name               TEXT,
-    airstamp           TEXT,
-    airdate            TEXT,
+    aired_at           TEXT,
     airtime            TEXT,
     runtime            INTEGER,
     summary            TEXT,
@@ -56,10 +61,10 @@ CREATE TABLE IF NOT EXISTS episodes (
     UNIQUE (show_id, season, number)
 );
 
-CREATE INDEX IF NOT EXISTS idx_episodes_show_airstamp
-    ON episodes (show_id, airstamp);
-CREATE INDEX IF NOT EXISTS idx_episodes_airstamp
-    ON episodes (airstamp);
+CREATE INDEX IF NOT EXISTS idx_episodes_show_aired
+    ON episodes (show_id, aired_at);
+CREATE INDEX IF NOT EXISTS idx_episodes_aired
+    ON episodes (aired_at);
 
 CREATE TABLE IF NOT EXISTS notifications (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,10 +78,11 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE TABLE IF NOT EXISTS rejects (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     kind       TEXT    NOT NULL CHECK (kind IN ('not_interested', 'already_watched')),
-    tvmaze_id  INTEGER,
+    source     TEXT    NOT NULL,
+    external_id TEXT   NOT NULL,
     title      TEXT,
     created_at TEXT    NOT NULL,
-    UNIQUE (kind, tvmaze_id)
+    UNIQUE (kind, source, external_id)
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -99,16 +105,32 @@ TELEGRAM_CHANNEL = "telegram"
 #: Ключ настройки: чат, откуда бот последний раз получал сообщения.
 CHAT_ID_SETTING = "telegram_chat_id"
 
+#: Источник расписания по умолчанию: пока он один, но в базе ключ всегда с ним.
+DEFAULT_SOURCE = "tvmaze"
+
 #: Виды отказов от рекомендаций.
 NOT_INTERESTED = "not_interested"
 ALREADY_WATCHED = "already_watched"
 REJECT_KINDS = (NOT_INTERESTED, ALREADY_WATCHED)
 
 SHOW_COLUMNS = (
-    "tvmaze_id, name, kind, status, network, premiered, ended, runtime, language, "
-    "genres, summary, url, image, thetvdb_id, imdb_id, rating, source_updated, "
-    "added_at, checked_at, id"
+    "id, name, kind, status, network, premiered, ended, runtime, language, "
+    "genres, summary, url, image, rating, source_updated, added_at, checked_at"
 )
+
+
+class SchemaError(RuntimeError):
+    """Файл базы есть, а схема чужая — продолжать нельзя."""
+
+
+def normalize_name(value: str) -> str:
+    """Ключ сравнения названий: без регистра, артиклей и лишних пробелов."""
+    text = " ".join((value or "").split()).casefold()
+    for prefix in ("the ", "a ", "an "):
+        if text.startswith(prefix):
+            text = text[len(prefix) :]
+            break
+    return text.strip(" -:,!?")
 
 
 def utcnow() -> datetime:
@@ -129,9 +151,20 @@ def to_iso_utc(value: datetime | None) -> str | None:
 
 
 @dataclass(frozen=True)
+class Identifier:
+    """Сериал глазами одного источника: («tvmaze», «44933») или чужой базы."""
+
+    source: str
+    external_id: str
+
+    @property
+    def key(self) -> str:
+        return f"{self.source}:{self.external_id}"
+
+
+@dataclass(frozen=True)
 class Show:
     id: int
-    tvmaze_id: int
     name: str
     kind: str | None
     status: str | None
@@ -144,12 +177,28 @@ class Show:
     summary: str | None
     url: str | None
     image: str | None
-    thetvdb_id: int | None
-    imdb_id: str | None
+    identifiers: tuple[Identifier, ...]
     rating: float | None
     source_updated: int | None
     added_at: str
     checked_at: str | None
+
+    @property
+    def key(self) -> Identifier | None:
+        """Ключ активного источника — им пользуются ссылки, отказы и команды."""
+        for identifier in self.identifiers:
+            if identifier.source == DEFAULT_SOURCE:
+                return identifier
+        return self.identifiers[0] if self.identifiers else None
+
+    @property
+    def external_id(self) -> str | None:
+        key = self.key
+        return key.external_id if key else None
+
+    @property
+    def name_of(self) -> dict[str, str]:  # pragma: no cover - удобство отладки
+        return {identifier.source: identifier.external_id for identifier in self.identifiers}
 
 
 @dataclass(frozen=True)
@@ -159,13 +208,11 @@ class Episode:
     season: int
     number: int
     name: str | None
-    airstamp: datetime | None
-    airdate: str | None
-    airtime: str | None
+    aired_at: datetime | None
     runtime: int | None
     summary: str | None
     watched_at: str | None
-    tvmaze_episode_id: int | None
+    external_id: str | None = None
     summary_ru: str | None = None
 
     @property
@@ -178,7 +225,7 @@ class Reject:
     """Отказ от рекомендации: «не интересно» или «уже смотрел»."""
 
     kind: str
-    tvmaze_id: int
+    identifier: Identifier
     title: str | None
     created_at: str
 
@@ -207,8 +254,21 @@ class Database:
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        self._check_schema()
         with self._conn:
             self._conn.executescript(SCHEMA)
+
+    def _check_schema(self) -> None:
+        """Старая база не чинится молча: её удаляют и заводят заново."""
+        tables = {
+            row["name"]
+            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        if "shows" in tables and "identifiers" not in tables:
+            raise SchemaError(
+                f"{self.path}: база сделана до перехода на общую схему. "
+                "Удалите файл и добавьте сериалы заново — миграции для старых баз нет."
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -221,78 +281,121 @@ class Database:
 
     # --- сериалы ---------------------------------------------------------
 
-    def upsert_show(self, show) -> Show:
-        """Записать сериал по данным TVmaze, не трогая время добавления."""
+    def upsert_show(self, source: str, record) -> Show:
+        """Записать сериал из источника, не трогая время добавления."""
         now = self._clock()
         with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO shows (
-                    tvmaze_id, name, kind, status, network, premiered, ended, runtime,
-                    language, genres, summary, url, image, thetvdb_id, imdb_id, rating,
-                    source_updated, added_at, checked_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(tvmaze_id) DO UPDATE SET
-                    name = excluded.name,
-                    kind = excluded.kind,
-                    status = excluded.status,
-                    network = excluded.network,
-                    premiered = excluded.premiered,
-                    ended = excluded.ended,
-                    runtime = excluded.runtime,
-                    language = excluded.language,
-                    genres = excluded.genres,
-                    summary = excluded.summary,
-                    url = excluded.url,
-                    image = excluded.image,
-                    thetvdb_id = excluded.thetvdb_id,
-                    imdb_id = excluded.imdb_id,
-                    rating = excluded.rating,
-                    source_updated = excluded.source_updated,
-                    checked_at = excluded.checked_at
-                """,
-                (
-                    show.id,
-                    show.name,
-                    show.kind,
-                    show.status,
-                    show.network,
-                    show.premiered,
-                    show.ended,
-                    show.runtime,
-                    show.language,
-                    json.dumps(list(show.genres), ensure_ascii=False),
-                    show.summary,
-                    show.url,
-                    show.image,
-                    show.thetvdb_id,
-                    show.imdb_id,
-                    show.rating,
-                    show.updated,
-                    now,
-                    now,
-                ),
-            )
-        stored = self.get_show_by_tvmaze_id(show.id)
+            row = self._conn.execute(
+                "SELECT show_id FROM identifiers WHERE source = ? AND external_id = ?",
+                (source, record.external_id),
+            ).fetchone()
+            if row is not None:
+                show_id = int(row["show_id"])
+                self._conn.execute(
+                    """
+                    UPDATE shows SET
+                        name = ?, kind = ?, status = ?, network = ?, premiered = ?,
+                        ended = ?, runtime = ?, language = ?, genres = ?, summary = ?,
+                        url = ?, image = ?, rating = ?, source_updated = ?, checked_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        record.title,
+                        record.kind,
+                        record.status,
+                        record.network,
+                        record.premiered,
+                        record.ended,
+                        record.runtime,
+                        record.language,
+                        json.dumps(list(record.genres), ensure_ascii=False),
+                        record.summary,
+                        record.url,
+                        record.image,
+                        record.rating,
+                        record.updated,
+                        now,
+                        show_id,
+                    ),
+                )
+            else:
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO shows (
+                        name, kind, status, network, premiered, ended, runtime, language,
+                        genres, summary, url, image, rating, source_updated, added_at, checked_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.title,
+                        record.kind,
+                        record.status,
+                        record.network,
+                        record.premiered,
+                        record.ended,
+                        record.runtime,
+                        record.language,
+                        json.dumps(list(record.genres), ensure_ascii=False),
+                        record.summary,
+                        record.url,
+                        record.image,
+                        record.rating,
+                        record.updated,
+                        now,
+                        now,
+                    ),
+                )
+                show_id = int(cursor.lastrowid)
+            self.link_identifier(show_id, source, record.external_id)
+            for name, value in (record.identifiers or {}).items():
+                self.link_identifier(show_id, name, value)
+        stored = self.get_show(show_id)
         assert stored is not None
         return stored
+
+    def link_identifier(self, show_id: int, source: str, external_id: str) -> None:
+        """Один сериал — много ключей: свой в источнике и в чужих базах."""
+        self._conn.execute(
+            "INSERT INTO identifiers (show_id, source, external_id) VALUES (?, ?, ?) "
+            "ON CONFLICT(source, external_id) DO NOTHING",
+            (show_id, source, str(external_id)),
+        )
+
+    def _with_identifiers(self, show: Show) -> Show:
+        return replace(show, identifiers=self.identifiers_of(show.id))
+
+    def identifiers_of(self, show_id: int) -> tuple[Identifier, ...]:
+        rows = self._conn.execute(
+            "SELECT source, external_id FROM identifiers WHERE show_id = ? ORDER BY source",
+            (show_id,),
+        ).fetchall()
+        return tuple(Identifier(row["source"], row["external_id"]) for row in rows)
 
     def get_show(self, show_id: int) -> Show | None:
         row = self._conn.execute(
             f"SELECT {SHOW_COLUMNS} FROM shows WHERE id = ?", (show_id,)
         ).fetchone()
-        return _row_to_show(row) if row else None
+        return self._with_identifiers(_row_to_show(row)) if row else None
 
-    def get_show_by_tvmaze_id(self, tvmaze_id: int) -> Show | None:
+    def get_by_identifier(self, source: str, external_id: str | int) -> Show | None:
+        """Сериал по ключу источника; голое число — это источник по умолчанию."""
+        source, external_id = split_key(str(external_id), default_source=source)
         row = self._conn.execute(
-            f"SELECT {SHOW_COLUMNS} FROM shows WHERE tvmaze_id = ?", (tvmaze_id,)
+            f"""
+            SELECT {', '.join(f's.{name.strip()}' for name in SHOW_COLUMNS.split(','))}
+            FROM identifiers i JOIN shows s ON s.id = i.show_id
+            WHERE i.source = ? AND i.external_id = ?
+            """,
+            (source, external_id),
         ).fetchone()
-        return _row_to_show(row) if row else None
+        return self._with_identifiers(_row_to_show(row)) if row else None
+
+    def find_by_name(self, source: str, external_id: str | int) -> Show | None:
+        """Тот же поиск по названию — источник умеет искать, а не только по id."""
+        return self.get_by_identifier(source, external_id)
 
     def find_shows(self, query: str) -> list[Show]:
         """Отслеживаемые сериалы по названию: сначала точное совпадение."""
-        from .tvmaze import normalize_name
-
         needle = normalize_name(query)
         if not needle:
             return []
@@ -306,7 +409,7 @@ class Database:
         rows = self._conn.execute(
             f"SELECT {SHOW_COLUMNS} FROM shows ORDER BY added_at, id"
         ).fetchall()
-        return [_row_to_show(row) for row in rows]
+        return [self._with_identifiers(_row_to_show(row)) for row in rows]
 
     def touch_show(self, show_id: int) -> None:
         with self._conn:
@@ -337,27 +440,23 @@ class Database:
                 self._conn.execute(
                     """
                     INSERT INTO episodes (
-                        show_id, tvmaze_episode_id, season, number, name, airstamp,
-                        airdate, airtime, runtime, summary, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        show_id, external_id, season, number, name, aired_at,
+                        runtime, summary, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(show_id, season, number) DO UPDATE SET
-                        tvmaze_episode_id = excluded.tvmaze_episode_id,
+                        external_id = excluded.external_id,
                         name = excluded.name,
-                        airstamp = excluded.airstamp,
-                        airdate = excluded.airdate,
-                        airtime = excluded.airtime,
+                        aired_at = excluded.aired_at,
                         runtime = excluded.runtime,
                         summary = excluded.summary
                     """,
                     (
                         show_id,
-                        episode.id,
+                        episode.external_id,
                         episode.season,
                         episode.number,
                         episode.name,
-                        to_iso_utc(episode.airstamp),
-                        episode.airdate,
-                        episode.airtime,
+                        to_iso_utc(episode.aired_at),
                         episode.runtime,
                         episode.summary,
                         now,
@@ -372,8 +471,8 @@ class Database:
     def list_episodes(self, show_id: int) -> list[Episode]:
         rows = self._conn.execute(
             """
-            SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, summary_ru, watched_at
+            SELECT id, show_id, external_id, season, number, name, aired_at,
+                   runtime, summary, summary_ru, watched_at
             FROM episodes WHERE show_id = ? ORDER BY season, number
             """,
             (show_id,),
@@ -384,11 +483,11 @@ class Database:
         after_iso = to_iso_utc(after if after is not None else utcnow())
         row = self._conn.execute(
             """
-            SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, summary_ru, watched_at
+            SELECT id, show_id, external_id, season, number, name, aired_at,
+                   runtime, summary, summary_ru, watched_at
             FROM episodes
-            WHERE show_id = ? AND airstamp IS NOT NULL AND airstamp > ?
-            ORDER BY airstamp LIMIT 1
+            WHERE show_id = ? AND aired_at IS NOT NULL AND aired_at > ?
+            ORDER BY aired_at LIMIT 1
             """,
             (show_id, after_iso),
         ).fetchone()
@@ -402,7 +501,7 @@ class Database:
 
     def count_episodes_without_time(self, show_id: int) -> int:
         row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM episodes WHERE show_id = ? AND airstamp IS NULL", (show_id,)
+            "SELECT COUNT(*) AS n FROM episodes WHERE show_id = ? AND aired_at IS NULL", (show_id,)
         ).fetchone()
         return int(row["n"])
 
@@ -416,8 +515,8 @@ class Database:
     ) -> list[tuple[int, Episode]]:
         """Эпизоды, которые уже вышли, но о которых ещё не сообщали.
 
-        «Вышел» — значит `airstamp` в UTC не позже `now`. Эпизоды без времени
-        сюда не попадают: единственный источник времени — `airstamp`.
+        «Вышел» — значит `aired_at` в UTC не позже `now`. Эпизоды без времени
+        сюда не попадают: единственный источник времени эфира.
         Окно `since` нужно, чтобы добавление сериала с историей не превратилось
         в поток из нескольких сотен уведомлений.
 
@@ -425,25 +524,25 @@ class Database:
         код обычно уже держит в руках.
         """
         clauses = [
-            "e.airstamp IS NOT NULL",
-            "e.airstamp <= ?",
+            "e.aired_at IS NOT NULL",
+            "e.aired_at <= ?",
             "e.watched_at IS NULL",
             "NOT EXISTS (SELECT 1 FROM notifications n WHERE n.episode_id = e.id AND n.channel = ?)",
         ]
         params: list[object] = [to_iso_utc(now), channel]
         if since is not None:
-            clauses.append("e.airstamp >= ?")
+            clauses.append("e.aired_at >= ?")
             params.append(to_iso_utc(since))
         if show_row_id is not None:
             clauses.append("e.show_id = ?")
             params.append(show_row_id)
         rows = self._conn.execute(
             f"""
-            SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, summary_ru, watched_at
+            SELECT id, show_id, external_id, season, number, name, aired_at,
+                   runtime, summary, summary_ru, watched_at
             FROM episodes e
             WHERE {' AND '.join(clauses)}
-            ORDER BY airstamp, show_id, season, number
+            ORDER BY aired_at, show_id, season, number
             """,
             params,
         ).fetchall()
@@ -453,11 +552,11 @@ class Database:
         """Что выходит между `since` и `until`, по времени эфира в UTC."""
         rows = self._conn.execute(
             """
-            SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, summary_ru, watched_at
+            SELECT id, show_id, external_id, season, number, name, aired_at,
+                   runtime, summary, summary_ru, watched_at
             FROM episodes
-            WHERE airstamp IS NOT NULL AND airstamp >= ? AND airstamp < ?
-            ORDER BY airstamp, show_id, season, number
+            WHERE aired_at IS NOT NULL AND aired_at >= ? AND aired_at < ?
+            ORDER BY aired_at, show_id, season, number
             """,
             (to_iso_utc(since), to_iso_utc(until)),
         ).fetchall()
@@ -516,7 +615,7 @@ class Database:
     # --- отказы ---------------------------------------------------------
 
     def reject(
-        self, tvmaze_id: int, kind: str, *, title: str | None = None
+        self, external_id: str | int, kind: str, *, source: str = DEFAULT_SOURCE, title: str | None = None
     ) -> bool:
         """Отметить кандидата как неинтересного. Повтор молча игнорируется."""
         if kind not in REJECT_KINDS:
@@ -524,23 +623,32 @@ class Database:
         with self._conn:
             cursor = self._conn.execute(
                 """
-                INSERT INTO rejects (kind, tvmaze_id, title, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(kind, tvmaze_id) DO NOTHING
+                INSERT INTO rejects (kind, source, external_id, title, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(kind, source, external_id) DO NOTHING
                 """,
-                (kind, tvmaze_id, title, self._clock()),
+                (kind, *split_key(str(external_id), default_source=source), title, self._clock()),
             )
         return cursor.rowcount > 0
 
     def rejects(self) -> list[Reject]:
         rows = self._conn.execute(
-            "SELECT kind, tvmaze_id, title, created_at FROM rejects ORDER BY created_at"
+            "SELECT kind, source, external_id, title, created_at FROM rejects ORDER BY created_at"
         ).fetchall()
-        return [Reject(kind=row["kind"], tvmaze_id=row["tvmaze_id"], title=row["title"],
-                       created_at=row["created_at"]) for row in rows]
+        return [
+            Reject(
+                kind=row["kind"],
+                identifier=Identifier(row["source"], row["external_id"]),
+                title=row["title"],
+                created_at=row["created_at"],
+            )
+            for row in rows
+        ]
 
-    def rejected_ids(self) -> set[int]:
-        return {row["tvmaze_id"] for row in self._conn.execute("SELECT tvmaze_id FROM rejects")}
+    def rejected_ids(self) -> set[str]:
+        """Ключи вида «tvmaze:44933» — источник и идентификатор вместе."""
+        rows = self._conn.execute("SELECT source, external_id FROM rejects").fetchall()
+        return {f"{row['source']}:{row['external_id']}" for row in rows}
 
     # --- настройки -------------------------------------------------------
 
@@ -593,7 +701,6 @@ class Database:
 def _row_to_show(row: sqlite3.Row) -> Show:
     return Show(
         id=row["id"],
-        tvmaze_id=row["tvmaze_id"],
         name=row["name"],
         kind=row["kind"],
         status=row["status"],
@@ -606,8 +713,7 @@ def _row_to_show(row: sqlite3.Row) -> Show:
         summary=row["summary"],
         url=row["url"],
         image=row["image"],
-        thetvdb_id=row["thetvdb_id"],
-        imdb_id=row["imdb_id"],
+        identifiers=(),
         rating=row["rating"],
         source_updated=row["source_updated"],
         added_at=row["added_at"],
@@ -616,22 +722,28 @@ def _row_to_show(row: sqlite3.Row) -> Show:
 
 
 def _row_to_episode(row: sqlite3.Row) -> Episode:
-    airstamp = row["airstamp"]
+    aired = row["aired_at"]
     return Episode(
         id=row["id"],
         show_id=row["show_id"],
-        tvmaze_episode_id=row["tvmaze_episode_id"],
         season=row["season"],
         number=row["number"],
         name=row["name"],
-        airstamp=datetime.fromisoformat(airstamp) if airstamp else None,
-        airdate=row["airdate"],
-        airtime=row["airtime"],
+        aired_at=datetime.fromisoformat(aired) if aired else None,
         runtime=row["runtime"],
         summary=row["summary"],
         watched_at=row["watched_at"],
+        external_id=row["external_id"],
         summary_ru=row["summary_ru"] if "summary_ru" in row.keys() else None,
     )
+
+
+def split_key(key: str, *, default_source: str = DEFAULT_SOURCE) -> tuple[str, str]:
+    """«tvmaze:44933» или просто «44933» — в виде источника и идентификатора."""
+    if ":" in key:
+        source, _, external_id = key.partition(":")
+        return source.strip(), external_id.strip()
+    return default_source, key.strip()
 
 
 def tracked_shows(db: Database, *, now: datetime | None = None) -> list[TrackedShow]:
@@ -652,6 +764,6 @@ def tracked_shows(db: Database, *, now: datetime | None = None) -> list[TrackedS
 
 
 def _sort_key(episode: Episode | None) -> Sequence[float]:
-    if episode is None or episode.airstamp is None:
+    if episode is None or episode.aired_at is None:
         return (float("inf"),)
-    return (episode.airstamp.timestamp(),)
+    return (episode.aired_at.timestamp(),)

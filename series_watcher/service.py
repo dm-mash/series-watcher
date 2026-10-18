@@ -20,10 +20,12 @@ from .db import (
     Episode,
     Show,
     TrackedShow,
+    normalize_name,
     tracked_shows,
     utcnow,
 )
-from .recommend import Recommendation, Recommender
+from .strategies import Recommendation, Request, get as get_strategy
+from .strategies.crew import CrewStrategy
 from .nlu import (
     ABOUT,
     ADD_SHOW,
@@ -39,7 +41,8 @@ from .nlu import (
 )
 from .notify import Notifier, footer
 from .sources import SourceAnswer, SourceSet
-from .tvmaze import TvMazeClient, TvMazeError, TvMazeShow, normalize_name
+from .models import ShowRecord
+from .schedule import ScheduleError, ScheduleSource
 
 #: Канал один: сервис рассчитан на одного пользователя в Telegram.
 NOTIFY_CHANNEL = TELEGRAM_CHANNEL
@@ -47,13 +50,17 @@ NOTIFY_CHANNEL = TELEGRAM_CHANNEL
 
 @dataclass(frozen=True)
 class Candidate:
-    show: TvMazeShow
-    score: float
+    """Сериал, найденный поиском: ещё не отслеживается."""
+
+    show: ShowRecord
+    score: float = 0.0
 
     @property
     def label(self) -> str:
-        meta = ", ".join(part for part in (self.show.kind, self.show.status, self.show.network) if part)
-        return f"{self.show.name} ({meta})" if meta else self.show.name
+        meta = ", ".join(
+            part for part in (self.show.kind, self.show.status, self.show.network) if part
+        )
+        return f"{self.show.title} ({meta})" if meta else self.show.title
 
 
 @dataclass(frozen=True)
@@ -125,10 +132,12 @@ class Reply:
 class SeriesWatcher:
     config: Config
     db: Database
-    tvmaze: TvMazeClient
+    source: ScheduleSource
     notifier: Notifier | None = None
     sources: SourceSet | None = None
     llm: object | None = None  # LLMClient | None; тип не импортируем, чтобы не было цикла
+    #: Что дал последний `_store`: сколько эпизодов добавил и обновил.
+    _last_counts: tuple[int, int] = (0, 0)
 
     def add_show(self, query: str, *, pick: int | None = None, limit: int = 7) -> AddResult:
         """Найти сериал в TVmaze и завести его в списке.
@@ -141,13 +150,12 @@ class SeriesWatcher:
         if not needle:
             return AddResult(status="not_found", message="Пустой запрос")
 
-        found = self.tvmaze.search_shows(query)
-        candidates = tuple(Candidate(show=item.show, score=item.score) for item in found[:limit])
+        candidates = tuple(Candidate(show=record, score=0.0) for record in self.source.search(query)[:limit])
         if not candidates:
             return self._add_by_description(query, needle, limit)
 
-        exact = next((item for item in candidates if item.show.normalized_name == needle), None)
-        chosen: TvMazeShow | None
+        exact = next((item for item in candidates if normalize_name(item.show.title) == needle), None)
+        chosen: ShowRecord | None
         if exact is not None:
             chosen = exact.show
         elif pick is not None:
@@ -186,12 +194,13 @@ class SeriesWatcher:
             return AddResult(
                 status="not_found", message=f"По запросу «{query}» ничего нет.{hint}"
             )
-        found = self.tvmaze.search_shows(title)
+        found = list(self.source.search(title))
         if not found:
             return AddResult(
-                status="not_found", message=f"По описанию «{query}» нашёл «{title}», но в каталоге его нет"
+                status="not_found",
+                message=f"По описанию «{query}» нашёл «{title}», но в каталоге его нет",
             )
-        candidates = tuple(Candidate(show=item.show, score=item.score) for item in found[:limit])
+        candidates = tuple(Candidate(show=record, score=0.0) for record in found[:limit])
         chosen = pick_show(
             title, [item.show for item in candidates], llm=self.llm  # type: ignore[arg-type]
         )
@@ -204,22 +213,28 @@ class SeriesWatcher:
                 show=result.show,
                 candidates=result.candidates,
                 episodes=result.episodes,
-                message=f"нашёл по описанию: {chosen.name}. {result.message}",
+                message=f"нашёл по описанию: {chosen.title}. {result.message}",
             )
         return result
 
-    def add_show_by_id(self, tvmaze_id: int) -> AddResult:
-        return self._store(self.tvmaze.get_show(tvmaze_id))
+    def add_show_by_key(self, external_id: str | int) -> AddResult:
+        """Добавить по ключу источника: «44933» или «tvmaze:44933»."""
+        return self._store(self.source.get_show(str(external_id)))
 
-    def refresh_show(self, tvmaze_id: int) -> AddResult:
-        """Перечитать сериал и его эпизоды из TVmaze."""
-        stored = self.db.get_show_by_tvmaze_id(tvmaze_id)
+    #: Историческое имя: ботам, кнопкам и привычке удобнее.
+    add_show_by_id = add_show_by_key
+
+    def refresh_show(self, external_id: str | int) -> AddResult:
+        """Перечитать сериал и его эпизоды из источника."""
+        stored = self.db.get_by_identifier(self.source.name, external_id)
         if stored is None:
-            return AddResult(status="not_found", message=f"Сериал {tvmaze_id} не отслеживается")
-        return self._store(self.tvmaze.get_show(tvmaze_id))
+            return AddResult(
+                status="not_found", message=f"Сериал {external_id} не отслеживается"
+            )
+        return self._store(self.source.get_show(str(stored.key.external_id)))
 
-    def remove_show(self, tvmaze_id: int) -> bool:
-        stored = self.db.get_show_by_tvmaze_id(tvmaze_id)
+    def remove_show(self, external_id: str | int) -> bool:
+        stored = self.db.get_by_identifier(self.source.name, external_id)
         if stored is None:
             return False
         self.db.remove_show(stored.id)
@@ -323,7 +338,7 @@ class SeriesWatcher:
         by_show: dict[str, list[str]] = {}
         for show, episode in rows:
             by_show.setdefault(show.name, []).append(
-                f"{_when(episode.airstamp, self.config)} — {episode.code}"
+                f"{_when(episode.aired_at, self.config)} — {episode.code}"
                 + (f" «{episode.name}»" if episode.name else "")
             )
         if len(by_show) == 1 and not any(by_show.values()):
@@ -341,7 +356,7 @@ class SeriesWatcher:
                 lines.append("  подходящего не нашлось")
             for item in items:
                 lines.append(f"  • {item.line()} — {item.show.url or ''}".rstrip(" —"))
-                blurb = one_liner(item.show.name, item.summary, llm=self.llm)  # type: ignore[arg-type]
+                blurb = one_liner(item.show.title, item.show.summary, llm=self.llm)  # type: ignore[arg-type]
                 if blurb:
                     lines.append("    " + blurb)
                 lines.append("    " + self._why(item))
@@ -360,14 +375,14 @@ class SeriesWatcher:
         answer = self.where_to_watch(show, limit=limit)
         if answer.offers:
             return answer.lines(limit)
-        return answer.lines(limit, hint=add_link_hint(show.tvmaze_id))
+        return answer.lines(limit, hint=add_link_hint(show.key.external_id))
 
     def episode_message(self, item: DueEpisode) -> str:
         episode = item.episode
         lines = [
             f"{item.show.name} — {episode.code}"
             + (f" «{episode.name}»" if episode.name else ""),
-            f"Вышел {_when(episode.airstamp, self.config)} ({self.config.tz_name})",
+            f"Вышел {_when(episode.aired_at, self.config)} ({self.config.tz_name})",
         ]
         brief = self.episode_brief(item.episode)
         if brief:
@@ -419,7 +434,7 @@ class SeriesWatcher:
             title = f" «{item.episode.name}»" if item.episode.name else ""
             lines.append(
                 f"{item.show.name} — {item.episode.code}{title} — "
-                f"{_when(item.episode.airstamp, self.config)}"
+                f"{_when(item.episode.aired_at, self.config)}"
             )
         if len(report.due) == 1:
             lines.extend(self.where_lines(report.due[0].show))
@@ -435,9 +450,9 @@ class SeriesWatcher:
             return Reply(text=plain(["Список отслеживаемых пуст."]))
         lines = [f"Отслеживаю {len(items)}:"]
         for item in items:
-            if item.next_episode and item.next_episode.airstamp:
+            if item.next_episode and item.next_episode.aired_at:
                 title = f" «{item.next_episode.name}»" if item.next_episode.name else ""
-                when = f"{item.next_episode.code}{title} — {_when(item.next_episode.airstamp, self.config)}"
+                when = f"{item.next_episode.code}{title} — {_when(item.next_episode.aired_at, self.config)}"
             else:
                 when = "следующий эпизод не запланирован"
             lines.append(f"{item.show.name} — {when}")
@@ -475,7 +490,9 @@ class SeriesWatcher:
             buttons = []
             for number, candidate in enumerate(result.candidates, start=1):
                 lines.append(f"{number}. {candidate.label}")
-                buttons.append((f"{number}. {candidate.show.name}", f"add {candidate.show.id}"))
+                buttons.append(
+                (f"{number}. {candidate.show.title}", f"add {candidate.show.external_id}")
+            )
             return Reply(text=footer(lines), buttons=tuple(buttons))
         assert result.show is not None
         verb = "Уже отслеживается" if result.status == "exists" else "Добавлен"
@@ -516,23 +533,35 @@ class SeriesWatcher:
         limit: int = 5,
         min_rating: float | None = None,
         focus: Show | None = None,
+        strategy: str | None = None,
     ) -> list[Recommendation]:
         """Подбор по всему списку или по названному сериалу."""
         if not self.db.list_shows():
             return []
-        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze)
-        options: dict[str, object] = {"limit": limit, "focus": focus}
-        if min_rating is not None:
-            options["min_rating"] = min_rating
-        return recommender.candidates(**options)  # type: ignore[arg-type]
+        request = Request(
+            config=self.config,
+            db=self.db,
+            source=self.source,
+            limit=limit,
+            focus=focus,
+            **({"min_rating": min_rating} if min_rating is not None else {}),
+        )
+        return list(get_strategy(strategy).candidates(request))
 
-    def cold_start(self, *, limit: int = 3, schedule_days: int = 3) -> list[Recommendation]:
-        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze)
-        return recommender.cold_start(limit=limit, schedule_days=schedule_days)
+    def cold_start(self, *, limit: int = 3, strategy: str | None = None) -> list[Recommendation]:
+        """Первый запуск: пустого списка не должно быть причиной молчать."""
+        request = Request(config=self.config, db=self.db, source=self.source, limit=limit)
+        chosen = get_strategy(strategy)
+        if isinstance(chosen, CrewStrategy):
+            return list(chosen.cold_start(request, limit=limit))
+        return []
 
-    def reject(self, tvmaze_id: int, kind: str) -> bool:
-        show = self.db.get_show_by_tvmaze_id(tvmaze_id)
-        return self.db.reject(tvmaze_id, kind, title=show.name if show else None)
+    def reject(self, external_id: str | int, kind: str) -> bool:
+        """Отказ от кандидата: он ещё не отслеживается, поэтому ищем по имени."""
+        show = self.db.get_by_identifier(self.source.name, external_id)
+        return self.db.reject(
+            external_id, kind, source=self.source.name, title=show.name if show else None
+        )
 
     def cold_start_reply(self) -> Reply:
         """Первый запуск: пустого списка не должно быть причиной молчать."""
@@ -544,7 +573,7 @@ class SeriesWatcher:
         for item in items:
             lines.append(f"{item.line()} — {item.show.url or ''}".rstrip(" —"))
             lines.append("  " + "; ".join(item.reasons))
-            buttons.append((f"Добавить {item.show.name}", f"add {item.show.id}"))
+            buttons.append((f"Добавить {item.show.title}", f"add {item.show.external_id}"))
         lines.append("Или напишите название сериала — добавлю.")
         return Reply(text=footer(lines), buttons=tuple(buttons))
 
@@ -559,7 +588,7 @@ class SeriesWatcher:
             return Reply(text=plain(["Запомнил: больше не предлагаю."]))
         try:
             result = self.add_show_by_id(int(parts[1]))
-        except TvMazeError as exc:
+        except ScheduleError as exc:
             return Reply(text=footer([f"Не получилось добавить: {exc}"]))
         if result.show is None:
             return Reply(text=plain(["Не получилось добавить сериал."]))
@@ -580,11 +609,11 @@ class SeriesWatcher:
         buttons = []
         for item in items:
             lines.append(f"• {item.line()} — {item.show.url or ''}".rstrip(" —"))
-            blurb = one_liner(item.show.name, item.summary, llm=self.llm)  # type: ignore[arg-type]
+            blurb = one_liner(item.show.title, item.show.summary, llm=self.llm)  # type: ignore[arg-type]
             if blurb:
                 lines.append("  " + blurb)
             lines.append("  " + self._why(item))
-            buttons.append((f"Не интересно: {item.show.name}", f"reject {item.show.id}"))
+            buttons.append((f"Не интересно: {item.show.title}", f"reject {item.show.external_id}"))
         return Reply(text=footer([title, ""] + lines), buttons=tuple(buttons))
 
     def _answer_about(self, intent: Intent, *, now: datetime | None = None) -> Reply:
@@ -592,46 +621,50 @@ class SeriesWatcher:
         if not intent.show:
             return Reply(text=plain(["О каком сериале рассказать?"]))
         tracked = self.db.find_shows(intent.show)
-        tvmaze_id = tracked[0].tvmaze_id if tracked else self._search_id(intent.show)
-        if tvmaze_id is None:
+        external_id = tracked[0].key.external_id if tracked else self._search_id(intent.show)
+        if external_id is None:
             return Reply(text=plain([f"«{intent.show}» не нашёл ни в списке, ни в каталоге."]))
-        payload = self.tvmaze.get_show(tvmaze_id)
+        payload = self.source.get_show(external_id)
 
-        lines = [f"{payload.name} ({', '.join(payload.genres) or payload.kind or 'сериал'})"]
+        lines = [f"{payload.title} ({', '.join(payload.genres) or payload.kind or 'сериал'})"]
         if payload.status:
             lines.append(
                 "Статус: " + payload.status + (f", канал {payload.network}" if payload.network else "")
             )
         if payload.rating is not None:
             lines.append(f"Рейтинг TVmaze: {payload.rating}")
-        blurb = one_liner(payload.name, payload.summary, llm=self.llm)  # type: ignore[arg-type]
+        blurb = one_liner(payload.title, payload.summary, llm=self.llm)  # type: ignore[arg-type]
         if blurb:
             lines.append(blurb)
 
         if tracked:
             item = next((it for it in self.list_shows(now=now) if it.show.id == tracked[0].id), None)
-            if item and item.next_episode and item.next_episode.airstamp:
-                lines.append(f"Следующий эпизод: {_when(item.next_episode.airstamp, self.config)}")
+            if item and item.next_episode and item.next_episode.aired_at:
+                lines.append(
+                    f"Следующий эпизод: {_when(item.next_episode.aired_at, self.config)}"
+                )
             lines.extend(self.where_lines(tracked[0]))
         else:
             lines.append("Ещё не отслеживается.")
         if payload.url:
             lines.append(payload.url)
 
-        buttons = () if tracked else ((f"Добавить {payload.name}", f"add {payload.id}"),)
+        buttons = (
+            () if tracked else ((f"Добавить {payload.title}", f"add {payload.external_id}"),)
+        )
         return Reply(text=footer(lines), buttons=buttons)
 
-    def _search_id(self, query: str) -> int | None:
+    def _search_id(self, query: str) -> str | None:
         """Каталог TVmaze: точное совпадение по названию, иначе лучшее из выдачи."""
         try:
-            found = self.tvmaze.search_shows(query)
-        except TvMazeError:
+            found = list(self.source.search(query))
+        except ScheduleError:
             return None
         if not found:
             return None
         needle = normalize_name(query)
-        exact = next((item for item in found if item.show.normalized_name == needle), None)
-        return (exact or found[0]).show.id
+        exact = next((item for item in found if normalize_name(item.title) == needle), None)
+        return (exact or found[0]).external_id
 
     def _focus_show(self, name: str | None) -> Show | None:
         """Сериал, названный в запросе: «похожие на Slow Horses»."""
@@ -642,7 +675,7 @@ class SeriesWatcher:
 
     def blurb(self, item: Recommendation) -> str | None:
         """Кратко о самом сериале — показывают и бот, и CLI."""
-        return one_liner(item.show.name, item.summary, llm=self.llm)  # type: ignore[arg-type]
+        return one_liner(item.show.title, item.show.summary, llm=self.llm)  # type: ignore[arg-type]
 
     def why(self, item: Recommendation) -> str:
         """Одна строка «почему» — её показывают и бот, и CLI."""
@@ -650,14 +683,14 @@ class SeriesWatcher:
 
     def _why(self, item: Recommendation) -> str:
         """Одна строка «почему»: словами модели, а без неё — фактами из API."""
-        prose = explain(item.show.name, item.reasons, llm=self.llm)  # type: ignore[arg-type]
+        prose = explain(item.show.title, item.reasons, llm=self.llm)  # type: ignore[arg-type]
         return prose or "; ".join(item.reasons)
 
     def _poll_show(self, show: Show) -> ShowPoll:
+        """Перечитать один сериал: один сериал упал — остальные проверяем дальше."""
         try:
-            fresh = self.tvmaze.get_show(show.tvmaze_id)
-            episodes = self.tvmaze.get_episodes(show.tvmaze_id, refresh=True)
-        except TvMazeError as exc:
+            result = self._store(self._fetch(show, fresh=True), fresh=True)
+        except ScheduleError as exc:
             return ShowPoll(
                 show=show,
                 episodes_total=self.db.count_episodes(show.id),
@@ -666,8 +699,8 @@ class SeriesWatcher:
                 without_time=self.db.count_episodes_without_time(show.id),
                 error=str(exc),
             )
-        stored = self.db.upsert_show(fresh)
-        added, updated = self.db.upsert_episodes(stored.id, episodes)
+        stored = result.show or show
+        added, updated = self._last_counts
         return ShowPoll(
             show=stored,
             episodes_total=self.db.count_episodes(stored.id),
@@ -676,14 +709,20 @@ class SeriesWatcher:
             without_time=self.db.count_episodes_without_time(stored.id),
         )
 
-    def _store(self, show: TvMazeShow) -> AddResult:
-        known = self.db.get_show_by_tvmaze_id(show.id) is not None
-        stored = self.db.upsert_show(show)
-        episodes = self.tvmaze.get_episodes(show.id)
+    def _store(self, record, *, fresh: bool = False) -> AddResult:
+        """Положить карточку и её эпизоды в базу."""
+        known = self.db.get_by_identifier(self.source.name, record.external_id) is not None
+        stored = self.db.upsert_show(self.source.name, record)
+        episodes = list(self.source.get_episodes(record.external_id, fresh=fresh))
         added, updated = self.db.upsert_episodes(stored.id, episodes)
+        self._last_counts = (added, updated)
         message = f"эпизодов в базе: {len(episodes)} (новых {added}, обновлено {updated})"
         status = "exists" if known else "added"
         return AddResult(status=status, show=stored, episodes=len(episodes), message=message)
+
+    def _fetch(self, show: Show, *, fresh: bool = False):
+        """Карточка сериала из источника по его ключу."""
+        return self.source.get_show(show.key.external_id, fresh=fresh)
 
 
 def plain(lines: Sequence[str]) -> str:

@@ -14,6 +14,7 @@ from series_watcher.notify import TelegramApi
 from series_watcher.nlu import Intent
 from series_watcher.service import SeriesWatcher
 from series_watcher.sources import SourceSet
+from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
 from conftest import FakeTelegram, load_fixture
@@ -63,7 +64,9 @@ def parts(tmp_path, fake_tvmaze, sleeps):
         transport=fake_tvmaze.transport(), cache=db, sleep=sleeps.append, rate_limit=(0, 10.0)
     )
     config = Config(tz_name="Europe/Moscow")
-    watcher = SeriesWatcher(config=config, db=db, tvmaze=client, sources=SourceSet([]))
+    watcher = SeriesWatcher(
+        config=config, db=db, source=TvMazeSchedule(client), sources=SourceSet([])
+    )
     watcher.add_show_by_id(75194)
     yield watcher, fake_tvmaze, db
     client.close()
@@ -254,15 +257,12 @@ def test_broken_button_data_asks_for_text(parts):
 
 
 def test_empty_list_offers_cold_start_instead_of_silence(tmp_path, fake_tvmaze, sleeps):
-    from series_watcher.recommend import _upcoming
-
     db = Database(tmp_path / "test.db")
     client = TvMazeClient(
         transport=fake_tvmaze.transport(), cache=db, sleep=sleeps.append, rate_limit=(0, 10.0)
     )
-    watcher = SeriesWatcher(config=Config(tz_name="Europe/Moscow"), db=db, tvmaze=client)
-    for day in _upcoming(3):
-        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+    watcher = SeriesWatcher(config=Config(tz_name="Europe/Moscow"), db=db, source=TvMazeSchedule(client))
+    fake_tvmaze.add("/schedule", load_fixture("schedule"))
 
     bot, api = make_bot(watcher, [text_update("привет")])
     bot.poll_once()
@@ -335,13 +335,10 @@ def test_where_button_lists_offers(parts):
 
 
 def test_recommend_button_is_answered(parts, fake_tvmaze):
-    from series_watcher.recommend import _upcoming
-
     watcher, fake, _ = parts
     fake.add("/shows/44933/crew", load_fixture("crew_show"))
     fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    for day in _upcoming(3):
-        fake.add(f"/schedule?date={day}", load_fixture("schedule"))
+    fake.add("/schedule", load_fixture("schedule"))
     bot, api = make_bot(watcher, [button("Порекомендуй")])
 
     bot.poll_once()
@@ -434,16 +431,13 @@ def test_digest_still_gives_the_week(parts, frozen_now):
 
 
 def test_named_show_makes_it_about_that_show(parts, fake_tvmaze, frozen_now):
-    from series_watcher.recommend import _upcoming
-
     watcher, fake, _ = parts
     fake.add("/shows/45039", dict(load_fixture("show"), id=45039, name="Slow Horses"))
     fake.add("/shows/45039/episodes", load_fixture("episodes"))
     watcher.add_show_by_id(45039)
     fake.add("/shows/45039/crew", [{"type": "Director", "person": {"id": 7, "name": "Someone"}}])
     fake.add("/people/7/crewcredits", [{"type": "Director", "_links": {"show": {"href": "https://api.tvmaze.com/shows/32", "name": "Fargo"}}}])
-    for day in _upcoming(3):
-        fake.add(f"/schedule?date={day}", [])
+    fake.add("/schedule", [])
     fake.add("/shows/32", dict(load_fixture("show"), id=32, name="Fargo", rating={"average": 8.6}))
     watcher.llm = None
 
@@ -455,13 +449,10 @@ def test_named_show_makes_it_about_that_show(parts, fake_tvmaze, frozen_now):
 
 
 def test_recommendation_has_a_reject_button(parts, fake_tvmaze, frozen_now):
-    from series_watcher.recommend import _upcoming
-
     watcher, fake, _ = parts
     fake.add("/shows/44933/crew", load_fixture("crew_show"))
     fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    for day in _upcoming(3):
-        fake.add(f"/schedule?date={day}", load_fixture("schedule"))
+    fake.add("/schedule", load_fixture("schedule"))
 
     bot, api = make_bot(watcher, [text_update("посоветуй что-нибудь")])
     bot.poll_once()
@@ -477,7 +468,7 @@ def test_reject_button_removes_the_candidate(parts):
     bot.poll_once()
 
     assert "больше не предлагаю" in api.sent[0]["text"]
-    assert 44933 in db.rejected_ids()
+    assert "tvmaze:44933" in db.rejected_ids()
 
 
 def test_about_answers_with_a_card(parts, fake_tvmaze):

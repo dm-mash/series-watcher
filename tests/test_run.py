@@ -12,6 +12,7 @@ from series_watcher.notify import Notifier
 from series_watcher.service import SeriesWatcher
 from series_watcher.sources import SourceSet
 from series_watcher.sources.custom import CustomSource
+from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
 from conftest import FakeTelegram, load_fixture
@@ -29,7 +30,7 @@ def parts(tmp_path, fake_tvmaze, sleeps):
         transport=fake_tvmaze.transport(), cache=db, sleep=sleeps.append, rate_limit=(0, 10.0)
     )
     fake_tvmaze.add("/shows/75194/episodes", load_fixture("episodes_running"))
-    watcher = SeriesWatcher(config=Config(tz_name="Europe/Moscow"), db=db, tvmaze=client)
+    watcher = SeriesWatcher(config=Config(tz_name="Europe/Moscow"), db=db, source=TvMazeSchedule(client))
     watcher.add_show_by_id(75194)
     yield watcher, fake_tvmaze, db
     client.close()
@@ -83,7 +84,7 @@ def test_run_message_carries_where_to_watch(parts, tmp_path):
     path = tmp_path / "where.json"
     show = watcher_show = parts[0].db.list_shows()[0]
     path.write_text(
-        json.dumps({str(show.tvmaze_id): [{"provider": "Кинопоиск", "url": "https://example.tv/x"}]}),
+        json.dumps({str(show.key.external_id): [{"provider": "Кинопоиск", "url": "https://example.tv/x"}]}),
         encoding="utf-8",
     )
     telegram = FakeTelegram()
@@ -187,7 +188,7 @@ def test_existing_link_is_used(parts, tmp_path):
     watcher, _, db = parts
     show = db.list_shows()[0]
     path = tmp_path / "where.json"
-    path.write_text(json.dumps({str(show.tvmaze_id): [{"url": "https://example.tv/x"}]}), encoding="utf-8")
+    path.write_text(json.dumps({str(show.key.external_id): [{"url": "https://example.tv/x"}]}), encoding="utf-8")
     watcher.sources = SourceSet([CustomSource(path)])
 
     lines = watcher.where_lines(show)

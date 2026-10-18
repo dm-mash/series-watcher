@@ -16,6 +16,8 @@ from .notify import Notifier, NotifyError, TelegramApi
 from .service import AddResult, SeriesWatcher
 from .sources import SourceSet
 from .sources.custom import CustomSource
+from .schedule import TvMazeSchedule
+from .strategies import names as strategy_names
 from .tvmaze import TvMazeClient, TvMazeError
 
 TVMAZE_CREDIT = "Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com"
@@ -68,11 +70,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     seed = sub.add_parser("seed", help="показать, с чего начать, когда список пуст")
     seed.add_argument("--limit", type=int, default=3, help="сколько предложить (по умолчанию 3)")
+    seed.add_argument(
+        "--strategy", choices=strategy_names(), default="crew", help="чем подбирать на старте"
+    )
 
     recommend = sub.add_parser("recommend", help="подобрать сериалы по вашему списку")
     recommend.add_argument("query", nargs="?", help="подобрать похожее на этот сериал")
     recommend.add_argument("--limit", type=int, default=5, help="сколько показать (по умолчанию 5)")
     recommend.add_argument("--min-rating", type=float, help="порог рейтинга (по умолчанию 6.5)")
+    recommend.add_argument(
+        "--strategy",
+        choices=strategy_names(),
+        default="crew",
+        help="чем подбирать (по умолчанию crew — по авторству и жанрам)",
+    )
     recommend.add_argument(
         "--reject", type=int, metavar="ID", help="отказаться от сериала с таким id TVmaze"
     )
@@ -122,9 +133,10 @@ def main(
     )
     notifier = Notifier(config, db, transport=transport)
     sources = SourceSet([CustomSource(config.custom_sources_path)])
+    source = TvMazeSchedule(tvmaze)
     llm = LLMClient(config, transport=transport)
     watcher = SeriesWatcher(
-        config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources, llm=llm
+        config=config, db=db, source=source, notifier=notifier, sources=sources, llm=llm
     )
     telegram = TelegramApi(config, notifier.client, token=config.telegram_bot_token)
     bot = Bot(config, watcher, telegram, llm=llm)
@@ -274,7 +286,7 @@ def _cmd_check(watcher: SeriesWatcher, config: Config, lookback: float | None, o
             title = f" «{item.episode.name}»" if item.episode.name else ""
             print(
                 f"  {item.show.name} — {item.episode.code}{title} — "
-                f"{_format_when(item.episode.airstamp, config)}",
+                f"{_format_when(item.episode.aired_at, config)}",
                 file=out,
             )
     else:
@@ -351,7 +363,7 @@ def _cmd_seed(watcher: SeriesWatcher, args: argparse.Namespace, out: TextIO) -> 
             print(f"  {item.show.name}", file=out)
         return EXIT_OK
 
-    items = watcher.cold_start(limit=args.limit)
+    items = watcher.cold_start(limit=args.limit, strategy=args.strategy)
     if not items:
         print("В расписании ничего подходящего не нашлось. Добавьте сериал по названию:", file=out)
         print("  series-watcher add «Название»", file=out)
@@ -362,7 +374,7 @@ def _cmd_seed(watcher: SeriesWatcher, args: argparse.Namespace, out: TextIO) -> 
         print(f"  {item.line()}", file=out)
         for reason in item.reasons:
             print(f"    {reason}", file=out)
-        print(f"    добавить: series-watcher add --id {item.show.id}", file=out)
+        print(f"    добавить: series-watcher add --id {item.show.external_id}", file=out)
         print(file=out)
     print(TVMAZE_CREDIT, file=out)
     return EXIT_OK
@@ -402,7 +414,9 @@ def _cmd_recommend(watcher: SeriesWatcher, config: Config, args: argparse.Namesp
             return EXIT_ERROR
         focus = found[0]
 
-    items = watcher.recommend(limit=args.limit, min_rating=args.min_rating, focus=focus)
+    items = watcher.recommend(
+        limit=args.limit, min_rating=args.min_rating, focus=focus, strategy=args.strategy
+    )
     header = f"Похожее на «{focus.name}»" if focus is not None else "Похожее на ваш список"
     if not items:
         print("Подходящих сериалов не нашлось.", file=out)
@@ -415,7 +429,7 @@ def _cmd_recommend(watcher: SeriesWatcher, config: Config, args: argparse.Namesp
             if blurb:
                 print(f"  {blurb}", file=out)
             print(f"  {watcher.why(item)}", file=out)
-            print(f"  отказаться: series-watcher recommend --reject {item.show.id}", file=out)
+            print(f"  отказаться: series-watcher recommend --reject {item.show.external_id}", file=out)
             print(file=out)
 
     print(TVMAZE_CREDIT, file=out)
@@ -480,7 +494,7 @@ def _print_next(
     if episode is None:
         print("    следующий эпизод: не запланирован", file=out)
         return
-    when = _format_when(episode.airstamp, config)
+    when = _format_when(episode.aired_at, config)
     title = f" «{episode.name}»" if episode.name else ""
     print(f"    следующий: {episode.code}{title} — {when}", file=out)
 

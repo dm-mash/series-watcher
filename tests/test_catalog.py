@@ -10,6 +10,7 @@ from series_watcher.catalog import (
     title_from_description,
 )
 from series_watcher.config import Config
+from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import parse_show
 
 from conftest import load_fixture
@@ -18,7 +19,9 @@ from test_llm import FakeLLM, reply
 
 
 def shows(*ids_and_names):
-    return [parse_show(dict(load_fixture("show"), id=i, name=n)) for i, n in ids_and_names]
+    """Карточки источника — так их и видит подбор."""
+    adapter = TvMazeSchedule(None)
+    return [adapter._show(parse_show(dict(load_fixture("show"), id=i, name=n))) for i, n in ids_and_names]
 
 
 def client(fake: FakeLLM, sleeps: list[float]):
@@ -57,7 +60,7 @@ def test_pick_selects_from_candidates(sleeps):
 
     chosen = pick_show("dark matter", candidates, llm=client(fake, sleeps))
 
-    assert chosen is not None and chosen.name == "Dark Matter"
+    assert chosen is not None and chosen.title == "Dark Matter"
 
 
 def test_pick_declines_low_confidence(sleeps):

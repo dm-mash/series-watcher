@@ -9,8 +9,9 @@
 }
 ```
 
-Ключ — id TVmaze (`series-watcher add --id` его показывает). Файла нет — источник
-просто недоступен, и об этом сообщается, а не выдумываются ссылки.
+Ключ — id сериала в источнике расписания (`series-watcher add --id` его
+показывает). Файла нет — источник просто недоступен, и об этом сообщается,
+а не выдумываются ссылки.
 """
 
 from __future__ import annotations
@@ -36,7 +37,7 @@ class CustomSource:
         return self.path.exists()
 
     def add(
-        self, tvmaze_id: int, url: str, *, provider: str = "ссылка", kind: str | None = None
+        self, external_id: str | int, url: str, *, provider: str = "ссылка", kind: str | None = None
     ) -> dict[str, Any]:
         """Дописать ссылку, сохранив всё, что там уже было."""
         try:
@@ -45,7 +46,7 @@ class CustomSource:
             raw = {}
         if not isinstance(raw, Mapping):
             raw = {}
-        key = str(tvmaze_id)
+        key = str(external_id)
         offers = [item for item in (raw.get(key) or []) if isinstance(item, (Mapping, str))]
         offers.append({"provider": provider, "url": url, **({"kind": kind} if kind else {})})
         raw[key] = offers
@@ -62,7 +63,8 @@ class CustomSource:
             raise SourceError(f"не читается {self.path}: {exc}") from exc
         if not isinstance(raw, Mapping):
             raise SourceError(f"{self.path}: ожидался объект с id сериала")
-        return _parse_offers(raw.get(str(show.tvmaze_id)))
+        key = show.key.external_id if show.key is not None else None
+        return _parse_offers(raw.get(key)) if key else []
 
 
 def _parse_offers(value: Any) -> list[Offer]:

@@ -153,3 +153,12 @@ def fake_tvmaze() -> FakeTVmaze:
 @pytest.fixture
 def sleeps() -> list[float]:
     return []
+
+
+def store_show(db, payload: dict, source: str = "tvmaze"):
+    """Положить карточку источника в базу так же, как это делает сервис."""
+    from series_watcher.schedule import TvMazeSchedule
+    from series_watcher.tvmaze import parse_show
+
+    record = TvMazeSchedule(None)._show(parse_show(payload))
+    return db.upsert_show(source, record)

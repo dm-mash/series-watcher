@@ -10,6 +10,7 @@ import pytest
 
 from series_watcher.cli import EXIT_ERROR, EXIT_NEEDS_CHOICE, EXIT_OK, main
 from series_watcher.config import Config
+from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
 from conftest import load_fixture
@@ -254,12 +255,9 @@ def test_recommend_on_empty_list_says_what_to_do(cli):
 
 
 def test_recommend_lists_candidates_with_reasons(cli, fake_tvmaze):
-    from series_watcher.recommend import _upcoming
-
     fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
     fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    for day in _upcoming(3):
-        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+    fake_tvmaze.add("/schedule", load_fixture("schedule"))
     cli("add", "--id", "44933")
 
     code, out, _ = cli("recommend", "--limit", "3")
@@ -280,10 +278,7 @@ def test_reject_is_remembered(cli):
 
 
 def test_seed_offers_something_to_start_with(cli, fake_tvmaze):
-    from series_watcher.recommend import _upcoming
-
-    for day in _upcoming(3):
-        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+    fake_tvmaze.add("/schedule", load_fixture("schedule"))
 
     code, out, _ = cli("seed", "--limit", "1")
 
@@ -302,13 +297,10 @@ def test_seed_is_a_noop_when_list_is_not_empty(cli):
 
 
 def test_digest_can_include_recommendations(cli, fake_tvmaze):
-    from series_watcher.recommend import _upcoming
-
     cli("add", "--id", "44933")
     fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
     fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    for day in _upcoming(3):
-        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+    fake_tvmaze.add("/schedule", load_fixture("schedule"))
 
     code, out, _ = cli("digest", "--recommend")
 

@@ -9,9 +9,10 @@ import pytest
 from series_watcher.config import Config
 from series_watcher.db import Database
 from series_watcher.service import NOTIFY_CHANNEL, SeriesWatcher
+from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
-from conftest import load_fixture
+from conftest import load_fixture, store_show
 
 # Момент, относительно которого считаем «уже вышел». В фикстуре ежедневный сериал:
 # 193 вышел 19 октября, 195 — 21 октября в 18:00 UTC.
@@ -32,7 +33,9 @@ def watcher(tmp_path, fake_tvmaze, sleeps) -> SeriesWatcher:
         sleep=sleeps.append,
         rate_limit=(0, 10.0),
     )
-    yield SeriesWatcher(config=Config(notify_lookback_hours=72.0), db=db, tvmaze=client)
+    yield SeriesWatcher(
+        config=Config(notify_lookback_hours=72.0), db=db, source=TvMazeSchedule(client)
+    )
     client.close()
     db.close()
 
@@ -100,7 +103,7 @@ def test_announced_episode_becomes_due_after_airing(watcher, fake_tvmaze):
 
     report = poll_with(fake_tvmaze, watcher, episodes_from(193))
     assert [item.episode.code for item in report.due] == ["S2026E193"]
-    assert report.due[0].episode.airstamp == datetime(2026, 10, 19, 18, 0, tzinfo=timezone.utc)
+    assert report.due[0].episode.aired_at == datetime(2026, 10, 19, 18, 0, tzinfo=timezone.utc)
 
 
 def test_rescheduled_episode_updates_time_and_keeps_identity(watcher, fake_tvmaze):
@@ -120,8 +123,8 @@ def test_rescheduled_episode_updates_time_and_keeps_identity(watcher, fake_tvmaz
     assert report.new_episodes == 0
     after = {item.episode.code: item.episode for item in report.due}
     assert after["S2026E194"].id == before["S2026E194"].id
-    assert after["S2026E194"].airstamp == datetime(2026, 10, 21, 4, 0, tzinfo=timezone.utc)
-    assert after["S2026E194"].airtime == "00:00"
+    assert after["S2026E194"].aired_at == datetime(2026, 10, 21, 4, 0, tzinfo=timezone.utc)
+    assert after["S2026E194"].aired_at.hour == 4
 
 
 def test_due_episodes_are_reported_once(watcher, fake_tvmaze):
@@ -150,7 +153,7 @@ def test_lookback_window_keeps_old_history_out(watcher, fake_tvmaze):
     wide = poll_with(fake_tvmaze, watcher, episodes_from(195), lookback_hours=24 * 90)
 
     assert [item.episode.code for item in narrow.due] == DUE_CODES
-    assert all(item.episode.airstamp >= NOW - timedelta(hours=72) for item in narrow.due)
+    assert all(item.episode.aired_at >= NOW - timedelta(hours=72) for item in narrow.due)
     assert len(wide.due) > len(narrow.due)
 
 
@@ -181,7 +184,7 @@ def test_one_broken_show_does_not_stop_the_others(watcher, fake_tvmaze):
 def test_due_episodes_are_in_chronological_order(watcher, fake_tvmaze):
     track(fake_tvmaze, watcher, 195)
     report = poll_with(fake_tvmaze, watcher, episodes_from(195))
-    stamps = [item.episode.airstamp for item in report.due]
+    stamps = [item.episode.aired_at for item in report.due]
 
     assert stamps == sorted(stamps)
     assert stamps == [

@@ -12,11 +12,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Protocol, Sequence
 
-from .models import Credit, EpisodeRecord, ShowRecord, WorkCredit
-from .tvmaze import TvMazeClient, TvMazeError, parse_airstamp, strip_html
+from .models import Credit, EpisodeRecord, ScheduleEntry, ShowRecord, WorkCredit
+from .tvmaze import TvMazeClient, TvMazeError
 
 #: Семейства ролей: у каталогов названия гранулярные и варьируются.
 ROLE_FAMILIES: dict[str, tuple[str, ...]] = {
@@ -96,10 +95,15 @@ class ScheduleSource(Protocol):
     def search(self, query: str) -> Sequence[ShowRecord]:
         """Найти по названию или описанию."""
 
-    def get_show(self, external_id: str) -> ShowRecord:
-        """Карточка сериала или `ShowNotFound`."""
+    def get_show(self, external_id: str, *, fresh: bool = False) -> ShowRecord:
+        """Карточка сериала или `ShowNotFound`.
 
-    def get_episodes(self, external_id: str) -> Sequence[EpisodeRecord]:
+        `fresh=True` — не доверять локальному кэшу. Опрос обязан так спрашивать:
+        перенос эфира не меняет ничего в самом сериале, и без обхода кэша мы бы
+        вечно видели старое расписание.
+        """
+
+    def get_episodes(self, external_id: str, *, fresh: bool = False) -> Sequence[EpisodeRecord]:
         """Все известные эпизоды, с временем эфира в UTC."""
 
     def get_credits(self, external_id: str) -> Sequence[Credit]:
@@ -107,6 +111,9 @@ class ScheduleSource(Protocol):
 
     def get_works(self, person_id: str) -> Sequence[WorkCredit]:
         """Другие работы человека — основа подбора по авторству."""
+
+    def get_schedule(self, day: str | None = None) -> Sequence[ScheduleEntry]:
+        """Что идёт в эфире. Без дня — всё расписание (может быть большим)."""
 
 
 class TvMazeSchedule:
@@ -128,15 +135,15 @@ class TvMazeSchedule:
             raise ScheduleError(str(exc)) from exc
         return [self._show(item.show) for item in found]
 
-    def get_show(self, external_id: str) -> ShowRecord:
+    def get_show(self, external_id: str, *, fresh: bool = False) -> ShowRecord:
         try:
-            return self._show(self._client.get_show(_int(external_id)))
+            return self._show(self._client.get_show(_int(external_id), refresh=fresh))
         except TvMazeError as exc:
             raise ShowNotFound(str(exc)) from exc
 
-    def get_episodes(self, external_id: str) -> Sequence[EpisodeRecord]:
+    def get_episodes(self, external_id: str, *, fresh: bool = False) -> Sequence[EpisodeRecord]:
         try:
-            episodes = self._client.get_episodes(_int(external_id))
+            episodes = self._client.get_episodes(_int(external_id), refresh=fresh)
         except TvMazeError as exc:
             raise ScheduleError(str(exc)) from exc
         return [
@@ -192,6 +199,24 @@ class TvMazeSchedule:
             )
         return found
 
+    def get_schedule(self, day: str | None = None) -> Sequence[ScheduleEntry]:
+        try:
+            entries = self._client.get_schedule(day)
+        except TvMazeError as exc:
+            raise ScheduleError(str(exc)) from exc
+        return [
+            ScheduleEntry(
+                show=self._show(entry.show),
+                episode=EpisodeRecord(
+                    season=entry.episode.season,
+                    number=entry.episode.number,
+                    name=entry.episode.name,
+                    aired_at=entry.episode.airstamp,
+                ),
+            )
+            for entry in entries
+        ]
+
     def _show(self, show) -> ShowRecord:
         identifiers = {}
         if show.thetvdb_id:
@@ -232,15 +257,6 @@ def build_source(config, db) -> ScheduleSource:
         rate_limit=config.tvmaze_rate_limit,
     )
     return TvMazeSchedule(client)
-
-
-def clean_html(value: str | None) -> str | None:
-    """Сводки приходят в HTML; в модель уходит уже текст."""
-    return strip_html(value)
-
-
-def utc(value: datetime | None) -> datetime | None:
-    return value.astimezone(timezone.utc) if value else None
 
 
 def _int(value: str | int) -> int:
