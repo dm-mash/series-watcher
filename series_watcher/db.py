@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS rejects (
     UNIQUE (kind, tvmaze_id)
 );
 
+CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS http_cache (
     key        TEXT PRIMARY KEY,
     url        TEXT NOT NULL,
@@ -88,6 +94,9 @@ CREATE TABLE IF NOT EXISTS http_cache (
 
 #: Канал один: сервис рассчитан на одного пользователя.
 TELEGRAM_CHANNEL = "telegram"
+
+#: Ключ настройки: чат, откуда бот последний раз получал сообщения.
+CHAT_ID_SETTING = "telegram_chat_id"
 
 #: Виды отказов от рекомендаций.
 NOT_INTERESTED = "not_interested"
@@ -517,6 +526,24 @@ class Database:
 
     def rejected_ids(self) -> set[int]:
         return {row["tvmaze_id"] for row in self._conn.execute("SELECT tvmaze_id FROM rejects")}
+
+    # --- настройки -------------------------------------------------------
+
+    def set_setting(self, key: str, value: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                """,
+                (key, value, self._clock()),
+            )
+
+    def get_setting(self, key: str) -> str | None:
+        row = self._conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        return row["value"] if row else None
 
     # --- HTTP-кэш -------------------------------------------------------
 

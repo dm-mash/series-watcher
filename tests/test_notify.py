@@ -186,3 +186,21 @@ def test_telegram_api_without_token_is_a_clear_error(db):
     api = TelegramApi(Config(), httpx.Client(transport=FakeTelegram().transport()))
     with pytest.raises(NotifyError, match="TELEGRAM_BOT_TOKEN"):
         api.send_message(1, "привет")
+
+
+def test_chat_falls_back_to_the_remembered_one(db):
+    """Явный TELEGRAM_CHAT_ID важнее; иначе бот пишет туда, откуда заговорили."""
+    from series_watcher.notify import Notifier
+
+    db.set_setting("telegram_chat_id", "555")
+    remembered = Notifier(Config(), db, token="t")
+    assert remembered._chat == "555"
+
+    explicit = Notifier(Config(telegram_chat_id="42"), db, token="t")
+    assert explicit._chat == "42"
+
+
+def test_without_any_chat_notifier_is_not_configured(db):
+    from series_watcher.notify import Notifier
+
+    assert Notifier(Config(), db, token="t").configured is False

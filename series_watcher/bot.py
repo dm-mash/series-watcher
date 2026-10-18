@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .config import Config
+from .db import CHAT_ID_SETTING
 from .llm import LLMClient
 from .notify import TelegramApi
 from .nlu import ADD_SHOW, Intent, parse
@@ -75,6 +76,7 @@ class Bot:
         chat = message.get("chat") or {}
         if not isinstance(text, str) or not text.strip() or not isinstance(chat, Mapping):
             return None
+        self._remember_chat(chat.get("id"))
         reply = self.answer(text)
         self._api.send_message(chat.get("id"), reply.text, buttons=reply.buttons)
         return HandledMessage(
@@ -95,6 +97,7 @@ class Bot:
         chat_id = chat.get("id") if isinstance(chat, Mapping) else None
         if chat_id is None:
             return None
+        self._remember_chat(chat_id)
         if not isinstance(data, str) or not data:
             reply = Reply(text="Кнопка без команды, напишите текстом.")
         else:
@@ -107,6 +110,12 @@ class Bot:
             reply=reply.text,
             buttons=reply.buttons,
         )
+
+    def _remember_chat(self, chat_id: Any) -> None:
+        """Откуда бот заговорил — значит оттуда ему и отвечать в уведомлениях."""
+        if chat_id is None:
+            return
+        self._watcher.db.set_setting(CHAT_ID_SETTING, str(chat_id))
 
     def poll_once(self, *, timeout: int = 25) -> list[HandledMessage]:
         updates = self._api.get_updates(offset=self._offset, timeout=timeout)

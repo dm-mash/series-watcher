@@ -12,7 +12,7 @@ from datetime import datetime
 from typing import Any, Mapping, Sequence
 
 from .config import Config, in_quiet_hours
-from .db import TELEGRAM_CHANNEL, Database, utcnow
+from .db import TELEGRAM_CHANNEL, CHAT_ID_SETTING, Database, utcnow
 from .tvmaze import TvMazeError
 
 TVMAZE_CREDIT = "Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com"
@@ -51,7 +51,7 @@ class Notifier:
         self._config = config
         self._db = db
         self._token = token if token is not None else config.telegram_bot_token
-        self._chat = chat_id if chat_id is not None else config.telegram_chat_id
+        self._chat = self._resolve_chat(config, chat_id, db)
         self._client = client or httpx.Client(
             timeout=config.http_timeout,
             transport=transport,
@@ -62,6 +62,15 @@ class Notifier:
     @property
     def configured(self) -> bool:
         return bool(self._token and self._chat)
+
+    @staticmethod
+    def _resolve_chat(config: Config, chat_id: int | str | None, db: Database) -> str | None:
+        """Явный `TELEGRAM_CHAT_ID` важнее; иначе — откуда бот последний раз писал."""
+        if chat_id is not None:
+            return str(chat_id)
+        if config.telegram_chat_id:
+            return str(config.telegram_chat_id)
+        return db.get_setting(CHAT_ID_SETTING)
 
     @property
     def client(self) -> Any:

@@ -270,3 +270,23 @@ def test_empty_list_offers_cold_start_instead_of_silence(tmp_path, fake_tvmaze, 
     assert api.sent[0]["buttons"][0][1].startswith("add ")
     client.close()
     db.close()
+
+
+def test_chat_is_remembered_for_later_notifications(parts):
+    watcher, _, db = parts
+    bot, api = make_bot(watcher, [text_update("дайджест", chat_id=4242)])
+
+    bot.poll_once()
+
+    assert db.get_setting("telegram_chat_id") == "4242"
+
+
+def test_callback_chat_is_remembered_too(parts, fake_tvmaze):
+    watcher, fake, db = parts
+    fake.add("/shows/44933", load_fixture("show"))
+    fake.add("/shows/44933/episodes", load_fixture("episodes"))
+    bot, _ = make_bot(watcher, [callback_update("add 44933", chat_id=77)])
+
+    bot.poll_once()
+
+    assert db.get_setting("telegram_chat_id") == "77"
