@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime, timezone
 
 import pytest
 
@@ -127,3 +128,52 @@ def test_broken_timezone_fails_before_network(cli, fake_tvmaze):
     assert code == EXIT_ERROR
     assert "Mars/Olympus" in err
     assert fake_tvmaze.calls == []
+
+NOW = datetime(2026, 10, 21, 19, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def fixed_now(monkeypatch) -> None:
+    monkeypatch.setattr("series_watcher.service.utcnow", lambda: NOW)
+
+
+def test_check_lists_due_episodes_in_user_timezone(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    code, moscow, _ = cli("--tz", "Europe/Moscow", "check")
+    _, new_york, _ = cli("--tz", "America/New_York", "check")
+
+    assert code == EXIT_OK
+    assert "Пора сообщить:" in moscow
+    assert "S2026E193 «Episode 392» — 19.10.2026 21:00" in moscow
+    assert "S2026E193 «Episode 392» — 19.10.2026 14:00" in new_york
+    assert "новых: 0" in moscow
+
+
+def test_check_on_empty_list_has_nothing_to_say(cli, fixed_now):
+    code, out, _ = cli("check")
+    assert code == EXIT_OK
+    assert "сериалов: 0" in out
+    assert "нечего" in out
+
+
+def test_check_fails_when_a_show_cannot_be_checked(cli, fake_tvmaze, fixed_now):
+    cli("add", "--id", "75194")
+    cli("add", "--id", "44933")
+    fake_tvmaze.add("/shows/44933/episodes", {"error": "gone"}, status=404)
+
+    code, out, _ = cli("check")
+    assert code == EXIT_ERROR
+    assert "Severance: не проверился" in out
+    assert "Beyond the Gates" in out
+
+
+def test_check_lookback_narrows_the_window(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    _, wide, _ = cli("--tz", "UTC", "check", "--lookback", "240")
+    _, narrow, _ = cli("--tz", "UTC", "check", "--lookback", "24")
+
+    assert wide.count("S2026E") >= narrow.count("S2026E")
+    assert "S2026E191" in wide
+    assert "S2026E191" not in narrow
