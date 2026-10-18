@@ -134,7 +134,9 @@ def test_schema_is_sent_with_every_request(sleeps):
 
 def test_buttons_are_offered_when_unsure():
     assert buttons_for(rules("привет"))
-    assert buttons_for(rules("посоветуй")) == (("Что нового", "Сводка", "Порекомендуй"),)
+    assert buttons_for(rules("посоветуй")) == (
+        (("Что нового", "Что нового"), ("Сводка", "Сводка"), ("Порекомендуй", "Порекомендуй")),
+    )
 
 
 def test_confidence_floor_is_respected():

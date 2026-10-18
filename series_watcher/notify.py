@@ -175,15 +175,28 @@ class TelegramApi:
 def _keyboard(buttons: Sequence[Sequence[Any]]) -> list[list[dict[str, str]]]:
     """Ряды кнопок Telegram.
 
-    Ряд — это либо пары `(подпись, callback)`, либо просто подписи: что именно,
-    решает первый элемент ряда.
+    Ряд — это кортеж кнопок, кнопка — пара `(подпись, callback)`. Ряд из одной
+    кнопки пишется как `((подпись, callback),)`.
+
+    Подпись вместо пары тоже можно: нажатие отправляет её как реплику. Но ряд
+    ровно из двух подписей неотличим от одной пары, поэтому такую ошибку лучше
+    поймать здесь, чем отправить в Telegram две кнопки: у первой callback будет
+    равен подписи, и нажатие ничего не сделает.
     """
     rows: list[list[dict[str, str]]] = []
     for row in buttons:
-        if not row:
-            continue
-        if isinstance(row[0], (tuple, list)):
-            rows.append([{"text": str(label), "callback_data": str(callback)} for label, callback in row])
-        else:
-            rows.append([{"text": str(label), "callback_data": str(label)} for label in row])
+        if len(row) == 2 and all(isinstance(button, str) for button in row):
+            raise TypeError(
+                f"ряд кнопок {row!r}: это одна кнопка или две подписки? "
+                "кнопка пишется как ((подпись, callback),)"
+            )
+        keyboard: list[dict[str, str]] = []
+        for button in row:
+            if isinstance(button, (tuple, list)):
+                label, callback = button
+                keyboard.append({"text": str(label), "callback_data": str(callback)})
+            else:
+                keyboard.append({"text": str(button), "callback_data": str(button)})
+        if keyboard:
+            rows.append(keyboard)
     return rows

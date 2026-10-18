@@ -125,7 +125,10 @@ class Reply:
     """Ответ разговорному слою: текст и кнопки, когда разбор неуверенный."""
 
     text: str
-    buttons: tuple[tuple[str, ...], ...] = ()
+    #: Ряды кнопок, кнопка — пара (подпись, callback). Ряд из одной кнопки:
+    #: `((подпись, callback),)`. Писать просто пару нельзя: она неотличима от
+    #: ряда из двух кнопок-подписей, и Telegram получает лишнюю кнопку.
+    buttons: tuple[tuple[tuple[str, str], ...], ...] = ()
 
 
 @dataclass
@@ -491,8 +494,8 @@ class SeriesWatcher:
             for number, candidate in enumerate(result.candidates, start=1):
                 lines.append(f"{number}. {candidate.label}")
                 buttons.append(
-                (f"{number}. {candidate.show.title}", f"add {candidate.show.external_id}")
-            )
+                    ((f"{number}. {candidate.show.title}", f"add {candidate.show.external_id}"),)
+                )
             return Reply(text=footer(lines), buttons=tuple(buttons))
         assert result.show is not None
         verb = "Уже отслеживается" if result.status == "exists" else "Добавлен"
@@ -573,7 +576,9 @@ class SeriesWatcher:
         for item in items:
             lines.append(f"{item.line()} — {item.show.url or ''}".rstrip(" —"))
             lines.append("  " + "; ".join(item.reasons))
-            buttons.append((f"Добавить {item.show.title}", f"add {item.show.external_id}"))
+            buttons.append(
+                ((f"Отслеживать: {item.show.title}", f"add {item.show.external_id}"),)
+            )
         lines.append("Или напишите название сериала — добавлю.")
         return Reply(text=footer(lines), buttons=tuple(buttons))
 
@@ -613,7 +618,12 @@ class SeriesWatcher:
             if blurb:
                 lines.append("  " + blurb)
             lines.append("  " + self._why(item))
-            buttons.append((f"Не интересно: {item.show.title}", f"reject {item.show.external_id}"))
+            buttons.append(
+                ((f"Отслеживать: {item.show.title}", f"add {item.show.external_id}"),)
+            )
+            buttons.append(
+                ((f"Не интересно: {item.show.title}", f"reject {item.show.external_id}"),)
+            )
         return Reply(text=footer([title, ""] + lines), buttons=tuple(buttons))
 
     def _answer_about(self, intent: Intent, *, now: datetime | None = None) -> Reply:
@@ -650,7 +660,7 @@ class SeriesWatcher:
             lines.append(payload.url)
 
         buttons = (
-            () if tracked else ((f"Добавить {payload.title}", f"add {payload.external_id}"),)
+            () if tracked else (((f"Отслеживать: {payload.title}", f"add {payload.external_id}"),),)
         )
         return Reply(text=footer(lines), buttons=buttons)
 

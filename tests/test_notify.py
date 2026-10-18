@@ -9,7 +9,7 @@ import pytest
 
 from series_watcher.config import Config
 from series_watcher.db import TELEGRAM_CHANNEL, Database
-from series_watcher.notify import Notifier, footer
+from series_watcher.notify import Notifier, _keyboard, footer
 
 from conftest import FakeTelegram, load_fixture, store_show
 from series_watcher.models import EpisodeRecord
@@ -202,3 +202,31 @@ def test_without_any_chat_notifier_is_not_configured(db):
     from series_watcher.notify import Notifier
 
     assert Notifier(Config(), db, token="t").configured is False
+
+
+def test_single_button_row_keeps_its_callback():
+    """Раньше ряд из одной кнопки превращался в две: с текстом и с callback.
+
+    Первая кнопка получала callback, равный своей подписи, и нажатие на неё
+    ничего не делало. Проверяем payload, а не только то, что кнопки есть.
+    """
+    assert _keyboard([(("Не интересно: The Americans", "reject 157"),)]) == [
+        [{"text": "Не интересно: The Americans", "callback_data": "reject 157"}]
+    ]
+
+
+def test_plain_labels_stay_shortcuts():
+    assert _keyboard([["Всё", "Или нет", "Не знаю"]]) == [
+        [
+            {"text": "Всё", "callback_data": "Всё"},
+            {"text": "Или нет", "callback_data": "Или нет"},
+            {"text": "Не знаю", "callback_data": "Не знаю"},
+        ]
+    ]
+
+
+def test_ambiguous_pair_of_labels_is_rejected():
+    """Две строки в ряду — это либо две подписки, либо одна кнопка: пусть
+    разработчик решит это явно, а не получит молча две кнопки в Telegram."""
+    with pytest.raises(TypeError, match="одна кнопка или две подписки"):
+        _keyboard([("Не интересно", "reject 157")])

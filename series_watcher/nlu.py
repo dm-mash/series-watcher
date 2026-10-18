@@ -237,8 +237,15 @@ def _as_int(value: Any) -> int | None:
     return None
 
 
-def buttons_for(intent: Intent) -> tuple[tuple[str, ...], ...]:
-    """Подсказки, когда разбор неуверенный: кнопки вместо догадок."""
+def buttons_for(intent: Intent) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """Подсказки, когда разбор неуверенный: кнопки вместо догадок.
+
+    Подпись равна команде: нажатие отправляет её как обычную реплику.
+    """
     if intent.name == RECOMMEND:
-        return (("Что нового", "Сводка", "Порекомендуй"),)
-    return (("Что нового", "Сводка", "Где смотреть"),)
+        return (_shortcuts("Что нового", "Сводка", "Порекомендуй"),)
+    return (_shortcuts("Что нового", "Сводка", "Где смотреть"),)
+
+
+def _shortcuts(*commands: str) -> tuple[tuple[str, str], ...]:
+    return tuple((command, command) for command in commands)

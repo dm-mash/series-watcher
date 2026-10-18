@@ -17,7 +17,7 @@ from series_watcher.sources import SourceSet
 from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
-from conftest import FakeTelegram, load_fixture
+from conftest import FakeTelegram, load_fixture, pin_schedule
 
 from test_check import NOW
 from test_recommend import person_credits
@@ -156,7 +156,7 @@ def test_add_show_offers_candidates_as_buttons(parts, fake_tvmaze):
 
     text = api.sent[0]["text"]
     assert "1. Dark" in text
-    assert api.sent[0]["buttons"] == (("1. Dark", "add 11"), ("2. Dark Matter", "add 12"))
+    assert api.sent[0]["buttons"] == ((("1. Dark", "add 11"),), (("2. Dark Matter", "add 12"),))
 
 
 def test_where_to_watch_without_links_says_what_to_do(parts):
@@ -262,14 +262,14 @@ def test_empty_list_offers_cold_start_instead_of_silence(tmp_path, fake_tvmaze, 
         transport=fake_tvmaze.transport(), cache=db, sleep=sleeps.append, rate_limit=(0, 10.0)
     )
     watcher = SeriesWatcher(config=Config(tz_name="Europe/Moscow"), db=db, source=TvMazeSchedule(client))
-    fake_tvmaze.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake_tvmaze)
 
     bot, api = make_bot(watcher, [text_update("привет")])
     bot.poll_once()
 
     assert "Список отслеживаемых пока пуст" in api.sent[0]["text"]
     assert api.sent[0]["buttons"]
-    assert api.sent[0]["buttons"][0][1].startswith("add ")
+    assert api.sent[0]["buttons"][0][0][1].startswith("add ")
     client.close()
     db.close()
 
@@ -338,7 +338,7 @@ def test_recommend_button_is_answered(parts, fake_tvmaze):
     watcher, fake, _ = parts
     fake.add("/shows/44933/crew", load_fixture("crew_show"))
     fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    fake.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake)
     bot, api = make_bot(watcher, [button("Порекомендуй")])
 
     bot.poll_once()
@@ -437,7 +437,7 @@ def test_named_show_makes_it_about_that_show(parts, fake_tvmaze, frozen_now):
     watcher.add_show_by_id(45039)
     fake.add("/shows/45039/crew", [{"type": "Director", "person": {"id": 7, "name": "Someone"}}])
     fake.add("/people/7/crewcredits", [{"type": "Director", "_links": {"show": {"href": "https://api.tvmaze.com/shows/32", "name": "Fargo"}}}])
-    fake.add("/schedule", [])
+    pin_schedule(fake, [])
     fake.add("/shows/32", dict(load_fixture("show"), id=32, name="Fargo", rating={"average": 8.6}))
     watcher.llm = None
 
@@ -448,17 +448,24 @@ def test_named_show_makes_it_about_that_show(parts, fake_tvmaze, frozen_now):
     assert "Fargo" in api.sent[0]["text"]
 
 
-def test_recommendation_has_a_reject_button(parts, fake_tvmaze, frozen_now):
+def test_recommendation_has_track_and_reject_buttons(parts, fake_tvmaze, frozen_now):
     watcher, fake, _ = parts
     fake.add("/shows/44933/crew", load_fixture("crew_show"))
     fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    fake.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake)
 
     bot, api = make_bot(watcher, [text_update("посоветуй что-нибудь")])
     bot.poll_once()
 
-    callbacks = [data for _, data in api.sent[0]["buttons"]]
-    assert callbacks and all(data.startswith("reject ") for data in callbacks)
+    buttons = api.sent[0]["buttons"]
+    callbacks = [data for row in buttons for _, data in row]
+    # Ряд из одной кнопки — это `((подпись, callback),)`: иначе Telegram
+    # получает лишнюю кнопку с подписью вместо callback.
+    assert all(len(row) == 1 for row in buttons)
+    assert [data.split()[0] for data in callbacks] == ["add", "reject"] * (len(buttons) // 2)
+    labels = [label for row in buttons for label, _ in row]
+    assert any(label.startswith("Не интересно") for label in labels)
+    assert any(label.startswith("Отслеживать") for label in labels)
 
 
 def test_reject_button_removes_the_candidate(parts):
@@ -505,7 +512,7 @@ def test_about_offers_to_add_untracked_show(parts, fake_tvmaze):
     bot.poll_once()
 
     assert "Ещё не отслеживается" in api.sent[0]["text"]
-    assert api.sent[0]["buttons"] == (("Добавить Silo", "add 38052"),)
+    assert api.sent[0]["buttons"] == ((("Отслеживать: Silo", "add 38052"),),)
 
 
 def test_about_without_name_asks(parts):
@@ -516,3 +523,28 @@ def test_about_without_name_asks(parts):
     bot.poll_once()
 
     assert "О каком сериале рассказать" in api.sent[0]["text"]
+
+
+def test_tracking_button_subscribes_to_a_recommendation(parts, fake_tvmaze):
+    """Подписаться можно прямо из подборки: кнопка «Отслеживать» шлёт `add <id>`."""
+    watcher, fake, _ = parts
+    fake.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    pin_schedule(fake)
+
+    bot, api = make_bot(watcher, [text_update("посоветуй что-нибудь")])
+    bot.poll_once()
+
+    track = [row[0] for row in api.sent[0]["buttons"] if row[0][0].startswith("Отслеживать")]
+    assert track, "у рекомендации должна быть кнопка «Отслеживать»"
+    label, callback = track[0]
+    wanted = callback.split()[1]
+
+    fake.add("/shows/" + wanted, dict(load_fixture("show"), id=int(wanted), name=label.split(": ", 1)[1]))
+    fake.add(f"/shows/{wanted}/episodes", load_fixture("episodes"))
+    before = [show.name for show in watcher.db.list_shows()]
+
+    bot, api = make_bot(watcher, [callback_update(callback)])
+    bot.poll_once()
+
+    assert [show.name for show in watcher.db.list_shows()] == [*before, label.split(": ", 1)[1]]
