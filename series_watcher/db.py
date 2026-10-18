@@ -86,6 +86,9 @@ CREATE TABLE IF NOT EXISTS http_cache (
 );
 """
 
+#: Канал один: сервис рассчитан на одного пользователя.
+TELEGRAM_CHANNEL = "telegram"
+
 SHOW_COLUMNS = (
     "tvmaze_id, name, kind, status, network, premiered, ended, runtime, language, "
     "genres, summary, url, image, thetvdb_id, imdb_id, rating, source_updated, "
@@ -402,6 +405,25 @@ class Database:
             params,
         ).fetchall()
         return [(row["show_id"], _row_to_episode(row)) for row in rows]
+
+    def upcoming_episodes(self, *, since: datetime, until: datetime) -> list[tuple[Show, Episode]]:
+        """Что выходит между `since` и `until`, по времени эфира в UTC."""
+        rows = self._conn.execute(
+            """
+            SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
+                   airdate, airtime, runtime, summary, watched_at
+            FROM episodes
+            WHERE airstamp IS NOT NULL AND airstamp >= ? AND airstamp < ?
+            ORDER BY airstamp, show_id, season, number
+            """,
+            (to_iso_utc(since), to_iso_utc(until)),
+        ).fetchall()
+        shows = {show.id: show for show in self.list_shows()}
+        return [
+            (shows[episode.show_id], episode)
+            for episode in (_row_to_episode(row) for row in rows)
+            if episode.show_id in shows
+        ]
 
     # --- отправки -------------------------------------------------------
 

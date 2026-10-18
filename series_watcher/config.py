@@ -24,6 +24,9 @@ DEFAULT_USER_AGENT = "series-watcher/0.1 (+https://github.com/series-watcher)"
 #: Лимит TVmaze — 20 запросов на 10 секунд на IP, берём с запасом.
 DEFAULT_RATE_LIMIT = (18, 10.0)
 
+#: Тихий режим по умолчанию: с 23:00 до 08:00 сообщения ждут утра.
+DEFAULT_QUIET_HOURS = (23, 8)
+
 #: Ключи, без которых возможности выключаются, а не падают.
 KEY_FIELDS = (
     "tmdb_api_key",
@@ -49,6 +52,16 @@ DEGRADATION_NOTES = {
 }
 
 
+def in_quiet_hours(hour: int, quiet: tuple[int, int] | None) -> bool:
+    """Попадает ли час в тихий режим. Окно через полночь не оборачивается дважды."""
+    if quiet is None:
+        return False
+    start, end = quiet
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
 class ConfigError(ValueError):
     """Неверное значение в окружении."""
 
@@ -66,6 +79,9 @@ class Config:
     tvmaze_cache_ttl: float = 21600.0
     tvmaze_rate_limit: tuple[int, float] = DEFAULT_RATE_LIMIT
     notify_lookback_hours: float = 72.0
+    notify_quiet_hours: tuple[int, int] | None = DEFAULT_QUIET_HOURS
+    justwatch_country: str = "RU"
+    custom_sources_path: Path = Path("data/where_to_watch.json")
     tmdb_api_key: str | None = None
     justwatch_api_key: str | None = None
     telegram_bot_token: str | None = None
@@ -142,6 +158,7 @@ class Config:
             tvmaze_cache_ttl=_float(env, "TVMAZE_CACHE_TTL", 21600.0),
             tvmaze_rate_limit=(rate_max, rate_window),
             notify_lookback_hours=_float(env, "NOTIFY_LOOKBACK_HOURS", 72.0),
+            notify_quiet_hours=_quiet_hours(env.get("QUIET_HOURS")),
             tmdb_api_key=_opt(env, "TMDB_API_KEY"),
             justwatch_api_key=_opt(env, "JUSTWATCH_API_KEY"),
             telegram_bot_token=_opt(env, "TELEGRAM_BOT_TOKEN"),
@@ -149,6 +166,8 @@ class Config:
             llm_base_url=_opt(env, "LLM_BASE_URL"),
             llm_api_key=_opt(env, "LLM_API_KEY"),
             llm_model=_opt(env, "LLM_MODEL"),
+            justwatch_country=(env.get("JUSTWATCH_COUNTRY") or "RU").upper(),
+            custom_sources_path=Path(env.get("CUSTOM_SOURCES_PATH") or Path("data/where_to_watch.json")),
         )
         return config
 
@@ -166,6 +185,25 @@ def _opt(env: Mapping[str, str], name: str) -> str | None:
         return None
     value = value.strip()
     return value or None
+
+
+def _quiet_hours(raw: str | None) -> tuple[int, int] | None:
+    """«23-8» — тихо с 23:00 до 08:00. Пустая переменная выключает режим."""
+    if raw is None:
+        return DEFAULT_QUIET_HOURS
+    if not raw.strip():
+        return None
+    text = raw.strip().replace("\u2014", "-").replace("..", "-")
+    parts = text.split("-")
+    if len(parts) != 2:
+        raise ConfigError(f"QUIET_HOURS ожидается как ЧЧ-ЧЧ, получено {raw!r}")
+    try:
+        start, end = (int(part.strip()) for part in parts)
+    except ValueError as exc:
+        raise ConfigError(f"QUIET_HOURS ожидается как ЧЧ-ЧЧ, получено {raw!r}") from exc
+    if not (0 <= start < 24 and 0 <= end < 24):
+        raise ConfigError(f"QUIET_HOURS: часы вне 0-23, получено {raw!r}")
+    return None if start == end else (start, end)
 
 
 def _int(env: Mapping[str, str], name: str, default: int) -> int:

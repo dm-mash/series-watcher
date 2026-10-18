@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence, TextIO
 
 from .config import Config, ConfigError
 from .db import Database, Show, TrackedShow
+from .notify import Notifier
 from .service import AddResult, SeriesWatcher
+from .sources import SourceSet
+from .sources.custom import CustomSource
+from .sources.justwatch import JustWatchSource
 from .tvmaze import TvMazeClient, TvMazeError
 
 TVMAZE_CREDIT = "Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com"
@@ -42,10 +46,25 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="сколько часов назад смотреть (по умолчанию NOTIFY_LOOKBACK_HOURS)",
     )
+
+    run = sub.add_parser("run", help="опросить расписание и разослать уведомления")
+    run.add_argument("--lookback", type=float, help="окно назад в часах")
+    run.add_argument("--dry-run", action="store_true", help="показать сообщения, не отправляя")
+    run.add_argument("--now", help="считать текущим моментом (для проверок), ISO 8601")
+
+    digest = sub.add_parser("digest", help="сводка по ближайшим дням")
+    digest.add_argument("--days", type=int, default=7, help="сколько дней вперёд (по умолчанию 7)")
+    digest.add_argument("--send", action="store_true", help="отправить в Telegram, а не напечатать")
     return parser
 
 
-def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None, stderr: TextIO | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    transport=None,
+) -> int:
     out = stdout or sys.stdout
     err = stderr or sys.stderr
     args = build_parser().parse_args(argv)
@@ -70,7 +89,14 @@ def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None, std
         user_agent=config.user_agent,
         rate_limit=config.tvmaze_rate_limit,
     )
-    watcher = SeriesWatcher(config=config, db=db, tvmaze=tvmaze)
+    notifier = Notifier(config, db, transport=transport)
+    sources = SourceSet(
+        [
+            CustomSource(config.custom_sources_path),
+            JustWatchSource(config.justwatch_api_key, country=config.justwatch_country),
+        ]
+    )
+    watcher = SeriesWatcher(config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources)
     try:
         if args.command == "add":
             return _cmd_add(watcher, config, args, out, err)
@@ -78,10 +104,18 @@ def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None, std
             return _cmd_list(watcher, config, out)
         if args.command == "check":
             return _cmd_check(watcher, config, args.lookback, out)
+        if args.command == "run":
+            return _cmd_run(watcher, config, args, out, err)
+        if args.command == "digest":
+            return _cmd_digest(watcher, config, args, out, err)
     except TvMazeError as exc:
         print(f"TVmaze: {exc}", file=err)
         return EXIT_ERROR
+    except ConfigError as exc:
+        print(f"Ошибка: {exc}", file=err)
+        return EXIT_ERROR
     finally:
+        notifier.close()
         tvmaze.close()
         db.close()
     return EXIT_ERROR
@@ -205,6 +239,71 @@ def _cmd_check(watcher: SeriesWatcher, config: Config, lookback: float | None, o
     print(file=out)
     print(TVMAZE_CREDIT, file=out)
     return EXIT_ERROR if report.failed else EXIT_OK
+
+
+def _cmd_run(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    moment = _parse_moment(args.now)
+    report = watcher.run(now=moment, lookback_hours=args.lookback, dry_run=args.dry_run)
+
+    for item in report.polled.shows:
+        if item.error:
+            print(f"  {item.show.name}: не проверился — {item.error}", file=err)
+
+    if report.deferred:
+        note = "отложено" if not args.dry_run else "в реальном запуске отложено бы"
+        print(
+            f"Тихий режим ({_quiet_label(config)}): {note} {report.deferred}. "
+            "Отправится утром.",
+            file=out,
+        )
+    for text in report.skipped:
+        print(text, file=out)
+        print(file=out)
+    for failure in report.failed:
+        print(f"Не отправлено — {failure}", file=err)
+
+    if report.sent:
+        print(f"Отправлено сообщений: {report.sent}", file=out)
+    elif not report.skipped and not report.deferred:
+        print("Отправлять нечего: всё, что вышло, уже отмечено.", file=out)
+    if report.failed:
+        return EXIT_ERROR
+    if report.polled.failed:
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def _cmd_digest(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    text = watcher.digest(days=args.days)
+    if not args.send:
+        print(text, file=out)
+        return EXIT_OK
+    result = watcher.notifier.send(text) if watcher.notifier else None
+    if result is None or not result.sent:
+        detail = result.detail if result else "нет отправителя"
+        print(f"Дайджест не отправлен: {detail}", file=err)
+        return EXIT_ERROR
+    print("Дайджест отправлен", file=out)
+    return EXIT_OK
+
+
+def _quiet_label(config: Config) -> str:
+    quiet = config.notify_quiet_hours
+    if quiet is None:
+        return "выключен"
+    return f"{quiet[0]:02d}:00-{quiet[1]:02d}:00 {config.tz_name}"
+
+
+def _parse_moment(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ConfigError(f"--now ожидается как ISO 8601, получено {value!r}") from exc
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
 
 
 def _show_meta(show: Show) -> str:

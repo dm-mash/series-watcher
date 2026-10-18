@@ -31,6 +31,9 @@ APP_ENV_VARS = (
     "TVMAZE_CACHE_TTL",
     "TVMAZE_RATE_LIMIT",
     "NOTIFY_LOOKBACK_HOURS",
+    "QUIET_HOURS",
+    "JUSTWATCH_COUNTRY",
+    "CUSTOM_SOURCES_PATH",
     "TMDB_API_KEY",
     "JUSTWATCH_API_KEY",
     "TELEGRAM_BOT_TOKEN",
@@ -99,6 +102,45 @@ class _Route:
         self.payload = payload
         self.status = status
         self.headers = headers
+
+
+class FakeTelegram:
+    """Подмена api.telegram.org: собирает отправленные сообщения."""
+
+    def __init__(self, *, status: int = 200, ok: bool = True, description: str = "") -> None:
+        self.status = status
+        self.ok = ok
+        self.description = description
+        self.sent: list[dict[str, Any]] = []
+
+    def transport(self) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.sent.append(json.loads(request.content.decode("utf-8")))
+            if self.status >= 400:
+                return httpx.Response(self.status, text="telegram is down")
+            body: dict[str, Any] = {"ok": self.ok, "result": {"message_id": len(self.sent)}}
+            if not self.ok:
+                body["description"] = self.description or "Bad Request"
+            return httpx.Response(self.status, json=body)
+
+        return httpx.MockTransport(handler)
+
+
+class FakeGraphQL:
+    """Подмена GraphQL-эндпоинта источника: один ответ на все запросы."""
+
+    def __init__(self, payload: Any, *, status: int = 200) -> None:
+        self.payload = payload
+        self.status = status
+        self.queries: list[dict[str, Any]] = []
+
+    def transport(self) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode("utf-8"))
+            self.queries.append(body)
+            return httpx.Response(self.status, json=self.payload)
+
+        return httpx.MockTransport(handler)
 
 
 @pytest.fixture

@@ -11,11 +11,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from .config import Config
-from .db import Database, Episode, Show, TrackedShow, tracked_shows, utcnow
+from .db import TELEGRAM_CHANNEL, Database, Episode, Show, TrackedShow, tracked_shows, utcnow
+from .notify import Notifier, footer
+from .sources import SourceAnswer, SourceSet
 from .tvmaze import TvMazeClient, TvMazeError, TvMazeShow, normalize_name
 
 #: Канал один: сервис рассчитан на одного пользователя в Telegram.
-NOTIFY_CHANNEL = "telegram"
+NOTIFY_CHANNEL = TELEGRAM_CHANNEL
 
 
 @dataclass(frozen=True)
@@ -71,11 +73,28 @@ class PollReport:
         return sum(item.new_episodes for item in self.shows)
 
 
+@dataclass(frozen=True)
+class RunReport:
+    """Что сделал `run`: отправлено, отложено, не отправлено."""
+
+    polled: PollReport
+    sent: int = 0
+    deferred: int = 0
+    skipped: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+
+    @property
+    def quiet(self) -> bool:
+        return self.deferred > 0
+
+
 @dataclass
 class SeriesWatcher:
     config: Config
     db: Database
     tvmaze: TvMazeClient
+    notifier: Notifier | None = None
+    sources: SourceSet | None = None
 
     def add_show(self, query: str, *, pick: int | None = None, limit: int = 7) -> AddResult:
         """Найти сериал в TVmaze и завести его в списке.
@@ -167,6 +186,101 @@ class SeriesWatcher:
         )
         return PollReport(checked_at=moment, shows=tuple(polls), due=due)
 
+    def run(
+        self,
+        *,
+        now: datetime | None = None,
+        lookback_hours: float | None = None,
+        dry_run: bool = False,
+    ) -> RunReport:
+        """Опросить расписание и разослать всё, что положено.
+
+        Отправка идёт по одному сообщению на эпизод: упавшее сообщение не должно
+        утаскивать за собой остальные. Отметка ставится только после успеха.
+        """
+        report = self.poll(now=now, lookback_hours=lookback_hours)
+        if not report.due:
+            return RunReport(polled=report)
+
+        notifier = self.notifier
+        if notifier is None:
+            return RunReport(polled=report, skipped=tuple("нет отправителя" for _ in report.due))
+
+        quiet = notifier.is_quiet(report.checked_at)
+        if quiet and not dry_run:
+            return RunReport(polled=report, deferred=len(report.due))
+
+        sent = 0
+        skipped: list[str] = []
+        failed: list[str] = []
+        for item in report.due:
+            message = self.episode_message(item)
+            if dry_run:
+                skipped.append(message)
+                continue
+            result = notifier.send_episode(item.episode.id, message)
+            if result.sent:
+                sent += 1
+            elif result.detail == "уже отправлено":
+                continue
+            elif not notifier.configured:
+                skipped.append(result.detail)
+            else:
+                failed.append(f"{item.show.name} {item.episode.code}: {result.detail}")
+        return RunReport(
+            polled=report,
+            sent=sent,
+            deferred=len(report.due) if quiet else 0,
+            skipped=tuple(skipped),
+            failed=tuple(failed),
+        )
+
+    def digest(self, *, days: int = 7, now: datetime | None = None) -> str:
+        """Сводка по ближайшим дням: что и когда выходит."""
+        moment = now if now is not None else utcnow()
+        horizon = moment + timedelta(days=days)
+        rows = self.db.upcoming_episodes(since=moment, until=horizon)
+        lines = [f"Ближайшие {days} дней:"]
+        by_show: dict[str, list[str]] = {}
+        for show, episode in rows:
+            by_show.setdefault(show.name, []).append(
+                f"{_when(episode.airstamp, self.config)} — {episode.code}"
+                + (f" «{episode.name}»" if episode.name else "")
+            )
+        if len(by_show) == 1 and not any(by_show.values()):
+            lines.append("пусто")
+        for name, items in by_show.items():
+            lines.append(name)
+            lines.extend(f"  {item}" for item in items)
+        if not by_show:
+            lines.append("пусто: расписание пустое или сериалов нет")
+        return footer(lines)
+
+    def where_to_watch(self, show: Show, *, limit: int = 3) -> SourceAnswer:
+        if self.sources is None:
+            return SourceAnswer()
+        answer = self.sources.where_to_watch(show, limit=limit)
+        if answer.offers:
+            return answer
+        return SourceAnswer(
+            offers=(),
+            source=None,
+            unavailable=answer.unavailable + ("tvmaze",),
+        )
+
+    def episode_message(self, item: DueEpisode) -> str:
+        episode = item.episode
+        lines = [
+            f"{item.show.name} — {episode.code}"
+            + (f" «{episode.name}»" if episode.name else ""),
+            f"Вышел {_when(episode.airstamp, self.config)} ({self.config.tz_name})",
+        ]
+        if item.show.url:
+            lines.append(item.show.url)
+        answer = self.where_to_watch(item.show)
+        lines.extend(answer.lines())
+        return footer(lines)
+
     def _poll_show(self, show: Show) -> ShowPoll:
         try:
             fresh = self.tvmaze.get_show(show.tvmaze_id)
@@ -198,3 +312,9 @@ class SeriesWatcher:
         message = f"эпизодов в базе: {len(episodes)} (новых {added}, обновлено {updated})"
         status = "exists" if known else "added"
         return AddResult(status=status, show=stored, episodes=len(episodes), message=message)
+
+
+def _when(value: datetime | None, config: Config) -> str:
+    if value is None:
+        return "время неизвестно"
+    return value.astimezone(config.tz).strftime("%d.%m.%Y %H:%M")

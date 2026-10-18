@@ -1,0 +1,111 @@
+"""Telegram: отправка, дедупликация, тихий режим.
+
+Отметка об отправке ставится только после успешного ответа Telegram: иначе
+эпизод потерялся бы навсегда. Без токена отправка не происходит, и об этом
+говорится прямо, а не падает.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Mapping, Sequence
+
+from .config import Config, in_quiet_hours
+from .db import TELEGRAM_CHANNEL, Database, utcnow
+from .tvmaze import TvMazeError
+
+TVMAZE_CREDIT = "Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com"
+
+
+class NotifyError(RuntimeError):
+    """Telegram не принял сообщение."""
+
+
+@dataclass(frozen=True)
+class SendResult:
+    sent: bool
+    detail: str = ""
+
+
+def footer(extra: Sequence[str] = ()) -> str:
+    """Подпись с атрибуцией: без неё ответ бота нарушает условия TVmaze."""
+    return "\n".join([*extra, TVMAZE_CREDIT])
+
+
+class Notifier:
+    """Отправка в Telegram с отметками о доставке."""
+
+    def __init__(
+        self,
+        config: Config,
+        db: Database,
+        *,
+        transport: Any = None,
+        token: str | None = None,
+        chat_id: int | str | None = None,
+    ) -> None:
+        import httpx
+
+        self._config = config
+        self._db = db
+        self._token = token if token is not None else config.telegram_bot_token
+        self._chat = chat_id if chat_id is not None else config.telegram_chat_id
+        self._client = httpx.Client(
+            timeout=config.http_timeout,
+            transport=transport,
+            headers={"User-Agent": config.user_agent},
+        )
+
+    @property
+    def configured(self) -> bool:
+        return bool(self._token and self._chat)
+
+    @property
+    def channel(self) -> str:
+        return TELEGRAM_CHANNEL
+
+    def close(self) -> None:
+        self._client.close()
+
+    def is_quiet(self, moment: datetime | None = None) -> bool:
+        now = moment or utcnow()
+        return in_quiet_hours(now.astimezone(self._config.tz).hour, self._config.notify_quiet_hours)
+
+    def send(self, text: str) -> SendResult:
+        """Отправить текст. Без токена или чата — отказ, а не исключение."""
+        if not self.configured:
+            return SendResult(sent=False, detail="нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
+        try:
+            self._post(text)
+        except (NotifyError, TvMazeError) as exc:
+            return SendResult(sent=False, detail=str(exc))
+        return SendResult(sent=True)
+
+    def send_episode(self, episode_id: int, text: str, *, kind: str = "new_episode") -> SendResult:
+        """Отправить и только потом отметить: иначе эпизод потерялся бы."""
+        if self._db.is_sent(episode_id, self.channel, kind):
+            return SendResult(sent=False, detail="уже отправлено")
+        result = self.send(text)
+        if result.sent:
+            self._db.mark_sent(episode_id, self.channel, kind)
+        return result
+
+    def _post(self, text: str) -> None:
+        import httpx
+
+        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+        payload = {"chat_id": self._chat, "text": text, "disable_web_page_preview": False}
+        try:
+            response = self._client.post(url, json=payload)
+        except httpx.HTTPError as exc:
+            raise NotifyError(f"Telegram не ответил: {exc}") from exc
+        if response.status_code >= 400:
+            raise NotifyError(f"Telegram ответил HTTP {response.status_code}: {response.text[:200]}")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise NotifyError("Telegram вернул не JSON") from exc
+        if isinstance(body, Mapping) and body.get("ok") is False:
+            description = body.get("description") or "без описания"
+            raise NotifyError(f"Telegram отказал: {description}")

@@ -177,3 +177,63 @@ def test_check_lookback_narrows_the_window(cli, fixed_now):
     assert wide.count("S2026E") >= narrow.count("S2026E")
     assert "S2026E191" in wide
     assert "S2026E191" not in narrow
+
+
+def test_run_without_token_says_so(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    code, out, _ = cli("--tz", "Europe/Moscow", "run", "--lookback", "72", "--now", "2026-10-21T12:00:00+00:00")
+
+    assert code == EXIT_OK
+    assert "TELEGRAM_BOT_TOKEN" in out
+    assert "Отправлено сообщений" not in out
+
+
+def test_run_dry_run_prints_messages(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    code, out, _ = cli(
+        "--tz", "Europe/Moscow", "run", "--dry-run", "--lookback", "72",
+        "--now", "2026-10-21T12:00:00+00:00",
+    )
+
+    assert code == EXIT_OK
+    assert "S2026E193" in out
+    assert "Вышел 20.10.2026 21:00" in out
+    assert "tvmaze.com" in out
+
+
+def test_run_in_quiet_hours_is_deferred(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    code, out, _ = cli("--tz", "Europe/Moscow", "run", "--now", "2026-10-19T21:30:00+00:00")
+
+    assert code == EXIT_OK
+    assert "Тихий режим (23:00-08:00 Europe/Moscow)" in out
+    assert "отложено" in out
+
+
+def test_digest_is_printed_by_default(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    code, out, _ = cli("--tz", "Europe/Moscow", "digest", "--days", "3")
+
+    assert code == EXIT_OK
+    assert "Ближайшие 3 дней" in out
+    assert "S2026E196" in out
+    assert "tvmaze.com" in out
+
+
+def test_digest_send_without_token_fails(cli, fixed_now):
+    cli("add", "--id", "75194")
+
+    code, _, err = cli("digest", "--send")
+
+    assert code == EXIT_ERROR
+    assert "не отправлен" in err
+
+
+def test_run_rejects_broken_now(cli, fake_tvmaze):
+    code, _, err = cli("run", "--now", "вчера вечером")
+    assert code == EXIT_ERROR
+    assert "ISO 8601" in err

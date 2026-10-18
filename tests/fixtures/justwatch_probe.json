@@ -1,0 +1,64 @@
+{
+  "search_empty_edges": {
+    "query": "query { searchTitles(source: \"Severance\", country: RU) { edges { node { id } } } }",
+    "status": 200,
+    "body": {
+      "data": {
+        "searchTitles": {
+          "edges": []
+        }
+      }
+    }
+  },
+  "title_list_required_args": {
+    "query": "query { titleList(country: RU, objectType: SERIES) { edges { node { __typename } } } }",
+    "status": 422,
+    "body": {
+      "errors": [
+        {
+          "message": "Value \"SERIES\" does not exist in \"TitleListObjectType!\" enum.",
+          "locations": [
+            {
+              "line": 1,
+              "column": 44
+            }
+          ],
+          "extensions": {
+            "code": "GRAPHQL_VALIDATION_FAILED"
+          }
+        },
+        {
+          "message": "Field \"titleList\" argument \"titleListType\" of type \"TitleListType!\" is required, but it was not provided.",
+          "locations": [
+            {
+              "line": 1,
+              "column": 9
+            }
+          ],
+          "extensions": {
+            "code": "GRAPHQL_VALIDATION_FAILED"
+          }
+        }
+      ],
+      "data": null
+    }
+  },
+  "nodes_needs_prefix": {
+    "query": "query { nodes(ids: [\"1000\"]) { __typename } }",
+    "status": 200,
+    "body": {
+      "errors": [
+        {
+          "message": "unknown prefix for key: 1000",
+          "path": [
+            "nodes"
+          ],
+          "extensions": {
+            "code": "VALIDATION_ERROR"
+          }
+        }
+      ],
+      "data": null
+    }
+  }
+}
