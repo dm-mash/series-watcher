@@ -243,3 +243,35 @@ def test_bot_without_token_reports_plainly(cli):
     code, _, err = cli("bot", "--once")
     assert code == EXIT_ERROR
     assert "TELEGRAM_BOT_TOKEN" in err
+
+
+def test_recommend_on_empty_list_says_what_to_do(cli):
+    code, out, _ = cli("recommend")
+    assert code == EXIT_OK
+    assert "Список пуст" in out
+
+
+def test_recommend_lists_candidates_with_reasons(cli, fake_tvmaze):
+    from series_watcher.recommend import _upcoming
+
+    fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    for day in _upcoming(3):
+        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+    cli("add", "--id", "44933")
+
+    code, out, _ = cli("recommend", "--limit", "3", "--no-tmdb")
+
+    assert code == EXIT_OK
+    assert "Похожее на ваш список" in out
+    assert "--reject" in out
+
+
+def test_reject_is_remembered(cli):
+    cli("add", "--id", "44933")
+
+    code, out, _ = cli("recommend", "--reject", "777")
+
+    assert code == EXIT_OK
+    assert "больше не предлагаю" in out
+    assert "not_interested" in out

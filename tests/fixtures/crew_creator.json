@@ -1,0 +1,47 @@
+[
+  {
+    "type": "Editor",
+    "_links": {
+      "show": {
+        "href": "https://api.tvmaze.com/shows/100",
+        "name": "Blue Bloods"
+      }
+    }
+  },
+  {
+    "type": "Editor",
+    "_links": {
+      "show": {
+        "href": "https://api.tvmaze.com/shows/40357",
+        "name": "Evil"
+      }
+    }
+  },
+  {
+    "type": "Creator",
+    "_links": {
+      "show": {
+        "href": "https://api.tvmaze.com/shows/44933",
+        "name": "Severance"
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "_links": {
+      "show": {
+        "href": "https://api.tvmaze.com/shows/44933",
+        "name": "Severance"
+      }
+    }
+  },
+  {
+    "type": "Editor",
+    "_links": {
+      "show": {
+        "href": "https://api.tvmaze.com/shows/51607",
+        "name": "The Bite"
+      }
+    }
+  }
+]

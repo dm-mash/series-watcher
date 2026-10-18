@@ -89,6 +89,11 @@ CREATE TABLE IF NOT EXISTS http_cache (
 #: Канал один: сервис рассчитан на одного пользователя.
 TELEGRAM_CHANNEL = "telegram"
 
+#: Виды отказов от рекомендаций.
+NOT_INTERESTED = "not_interested"
+ALREADY_WATCHED = "already_watched"
+REJECT_KINDS = (NOT_INTERESTED, ALREADY_WATCHED)
+
 SHOW_COLUMNS = (
     "tvmaze_id, name, kind, status, network, premiered, ended, runtime, language, "
     "genres, summary, url, image, thetvdb_id, imdb_id, rating, source_updated, "
@@ -155,6 +160,20 @@ class Episode:
     @property
     def code(self) -> str:
         return f"S{self.season:02d}E{self.number:02d}" if self.season else f"E{self.number:02d}"
+
+
+@dataclass(frozen=True)
+class Reject:
+    """Отказ от рекомендации: «не интересно» или «уже смотрел»."""
+
+    kind: str
+    tvmaze_id: int
+    title: str | None
+    created_at: str
+
+    @property
+    def label(self) -> str:
+        return "уже смотрел" if self.kind == ALREADY_WATCHED else "не интересно"
 
 
 @dataclass(frozen=True)
@@ -469,6 +488,35 @@ class Database:
                 (episode_id, channel, kind, sent_at or self._clock()),
             )
         return cursor.rowcount > 0
+
+    # --- отказы ---------------------------------------------------------
+
+    def reject(
+        self, tvmaze_id: int, kind: str, *, title: str | None = None
+    ) -> bool:
+        """Отметить кандидата как неинтересного. Повтор молча игнорируется."""
+        if kind not in REJECT_KINDS:
+            raise ValueError(f"неизвестный вид отказа: {kind!r}")
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                INSERT INTO rejects (kind, tvmaze_id, title, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(kind, tvmaze_id) DO NOTHING
+                """,
+                (kind, tvmaze_id, title, self._clock()),
+            )
+        return cursor.rowcount > 0
+
+    def rejects(self) -> list[Reject]:
+        rows = self._conn.execute(
+            "SELECT kind, tvmaze_id, title, created_at FROM rejects ORDER BY created_at"
+        ).fetchall()
+        return [Reject(kind=row["kind"], tvmaze_id=row["tvmaze_id"], title=row["title"],
+                       created_at=row["created_at"]) for row in rows]
+
+    def rejected_ids(self) -> set[int]:
+        return {row["tvmaze_id"] for row in self._conn.execute("SELECT tvmaze_id FROM rejects")}
 
     # --- HTTP-кэш -------------------------------------------------------
 

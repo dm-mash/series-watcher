@@ -10,10 +10,11 @@ from typing import Sequence, TextIO
 
 from .bot import Bot
 from .config import Config, ConfigError
-from .db import Database, Show, TrackedShow
+from .db import NOT_INTERESTED, ALREADY_WATCHED, Database, Show, TrackedShow
 from .llm import LLMClient
 from .notify import Notifier, NotifyError, TelegramApi
 from .service import AddResult, SeriesWatcher
+from .tmdb import TmdbClient
 from .sources import SourceSet
 from .sources.custom import CustomSource
 from .sources.justwatch import JustWatchSource
@@ -57,6 +58,22 @@ def build_parser() -> argparse.ArgumentParser:
     digest = sub.add_parser("digest", help="сводка по ближайшим дням")
     digest.add_argument("--days", type=int, default=7, help="сколько дней вперёд (по умолчанию 7)")
     digest.add_argument("--send", action="store_true", help="отправить в Telegram, а не напечатать")
+
+    recommend = sub.add_parser("recommend", help="подобрать сериалы по вашему списку")
+    recommend.add_argument("--limit", type=int, default=5, help="сколько показать (по умолчанию 5)")
+    recommend.add_argument("--min-rating", type=float, help="порог рейтинга TMDB/TVmaze")
+    recommend.add_argument(
+        "--no-tmdb", action="store_true", help="не ходить в TMDB даже если ключ есть"
+    )
+    recommend.add_argument(
+        "--reject", type=int, metavar="ID", help="отказаться от сериала с таким id TVmaze"
+    )
+    recommend.add_argument(
+        "--reject-kind",
+        choices=(NOT_INTERESTED, ALREADY_WATCHED),
+        default=NOT_INTERESTED,
+        help="как отказаться (по умолчанию «не интересно»)",
+    )
 
     bot = sub.add_parser("bot", help="разговорный слой: опрос Telegram и ответы")
     bot.add_argument("--once", action="store_true", help="один заход и выход")
@@ -102,7 +119,10 @@ def main(
             JustWatchSource(config.justwatch_api_key, country=config.justwatch_country),
         ]
     )
-    watcher = SeriesWatcher(config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources)
+    tmdb = TmdbClient(config.tmdb_api_key, cache=db, transport=transport)
+    watcher = SeriesWatcher(
+        config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources, tmdb=tmdb
+    )
     telegram = TelegramApi(config, notifier.client, token=config.telegram_bot_token)
     llm = LLMClient(config, transport=transport)
     bot = Bot(config, watcher, telegram, llm=llm)
@@ -119,6 +139,8 @@ def main(
             return _cmd_digest(watcher, config, args, out, err)
         if args.command == "bot":
             return _cmd_bot(bot, args, out, err)
+        if args.command == "recommend":
+            return _cmd_recommend(watcher, config, args, out, err)
     except TvMazeError as exc:
         print(f"TVmaze: {exc}", file=err)
         return EXIT_ERROR
@@ -129,6 +151,7 @@ def main(
         print(f"Ошибка: {exc}", file=err)
         return EXIT_ERROR
     finally:
+        tmdb.close()
         llm.close()
         telegram.close()
         notifier.close()
@@ -300,6 +323,41 @@ def _cmd_digest(watcher: SeriesWatcher, config: Config, args: argparse.Namespace
         print(f"Дайджест не отправлен: {detail}", file=err)
         return EXIT_ERROR
     print("Дайджест отправлен", file=out)
+    return EXIT_OK
+
+
+def _cmd_recommend(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    if args.reject is not None:
+        if watcher.reject(args.reject, args.reject_kind):
+            print(f"Запомнил: этот сериал больше не предлагаю ({args.reject_kind}).", file=out)
+            return EXIT_OK
+        print(f"Сериал {args.reject} и так в отказах.", file=out)
+        return EXIT_OK
+
+    if not watcher.db.list_shows():
+        print("Список пуст: добавьте сериал, иначе подбирать не от чего.", file=out)
+        return EXIT_OK
+
+    items = watcher.recommend(
+        limit=args.limit, use_tmdb=not args.no_tmdb, min_rating=args.min_rating
+    )
+    if not items:
+        print("Подходящих сериалов не нашлось.", file=out)
+    else:
+        print(f"Похожее на ваш список ({len(items)}):", file=out)
+        print(file=out)
+        for item in items:
+            print(f"  {item.line()}", file=out)
+            for reason in item.reasons:
+                print(f"    {reason}", file=out)
+            print(f"    {item.show.url}", file=out)
+            print(f"    отказаться: series-watcher recommend --reject {item.show.id}", file=out)
+            print(file=out)
+
+    print(TVMAZE_CREDIT, file=out)
+    for note in config.degradation_notes():
+        if "TMDB" in note:
+            print(note, file=out)
     return EXIT_OK
 
 

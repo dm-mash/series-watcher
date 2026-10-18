@@ -13,6 +13,7 @@ from typing import Sequence
 
 from .config import Config
 from .db import TELEGRAM_CHANNEL, Database, Episode, Show, TrackedShow, tracked_shows, utcnow
+from .recommend import Recommendation, Recommender
 from .nlu import (
     ADD_SHOW,
     DIGEST,
@@ -115,6 +116,7 @@ class SeriesWatcher:
     tvmaze: TvMazeClient
     notifier: Notifier | None = None
     sources: SourceSet | None = None
+    tmdb: object | None = None
 
     def add_show(self, query: str, *, pick: int | None = None, limit: int = 7) -> AddResult:
         """Найти сериал в TVmaze и завести его в списке.
@@ -405,8 +407,33 @@ class SeriesWatcher:
         names = ", ".join(f"{item.code}" for item in candidates)
         return Reply(text=footer([f"Отметил просмотренным: {target.name} — {names}"]))
 
+    def recommend(self, *, limit: int = 5, use_tmdb: bool = True, min_rating: float | None = None) -> list[Recommendation]:
+        if not self.db.list_shows():
+            return []
+        options: dict[str, object] = {"limit": limit, "use_tmdb": use_tmdb}
+        if min_rating is not None:
+            options["min_rating"] = min_rating
+        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze, tmdb=self.tmdb)
+        return recommender.candidates(**options)  # type: ignore[arg-type]
+
+    def reject(self, tvmaze_id: int, kind: str) -> bool:
+        show = self.db.get_show_by_tvmaze_id(tvmaze_id)
+        return self.db.reject(tvmaze_id, kind, title=show.name if show else None)
+
     def _answer_recommend(self, intent: Intent, *, now: datetime | None = None) -> Reply:
-        return Reply(text=footer(["Рекомендации ещё не сделаны: следующий этап."]))
+        if not self.db.list_shows():
+            return Reply(text=footer(["Список пуст — добавлять нечего и рекомендовать не от чего."]))
+        items = self.recommend()
+        if not items:
+            note = ""
+            if self.tmdb is None or not getattr(self.tmdb, "available", lambda: False)():
+                note = "Без TMDB_API_KEY подбор идёт по создателям и жанрам."
+            return Reply(text=footer(["Подходящих сериалов не нашлось." + note]))
+        lines = ["Похожее на ваш список:"]
+        for item in items:
+            lines.append(f"{item.line()} — {item.show.url or ''}".rstrip(" —"))
+            lines.append("  " + "; ".join(item.reasons))
+        return Reply(text=footer(lines))
 
     def _poll_show(self, show: Show) -> ShowPoll:
         try:

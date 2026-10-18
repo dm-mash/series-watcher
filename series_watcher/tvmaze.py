@@ -23,6 +23,7 @@ DEFAULT_BASE_URL = "https://api.tvmaze.com"
 DEFAULT_TTL = 21600.0
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 MAX_SLEEP = 10.0
+_SHOW_HREF_RE = re.compile(r"/shows/(\d+)")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 _ARTICLE_PREFIXES = ("the ", "a ", "an ")
@@ -126,6 +127,26 @@ class TvMazeEpisode:
     airtime: str | None = None
     runtime: int | None = None
     summary: str | None = None
+
+
+@dataclass(frozen=True)
+class TvMazeCrew:
+    """Запись из `/shows/{id}/crew`: роль и человек."""
+
+    show_id: int
+    role: str
+    person_id: int
+    person_name: str
+
+
+@dataclass(frozen=True)
+class TvMazeCredit:
+    """Работа человека: из `/people/{id}/crewcredits`."""
+
+    person_id: int
+    role: str
+    show_id: int
+    show_name: str
 
 
 @dataclass(frozen=True)
@@ -281,6 +302,47 @@ class TvMazeClient:
         payload = self._get(f"/shows/{show_id}/episodes", refresh=refresh)
         return dedupe_episodes(parse_episode(item, show_id) for item in payload or ())
 
+    def get_crew(self, show_id: int, *, refresh: bool = False) -> list[TvMazeCrew]:
+        """Группа сериала: роли вроде `Creator` живут именно здесь."""
+        payload = self._get(f"/shows/{show_id}/crew", refresh=refresh)
+        crew: list[TvMazeCrew] = []
+        for item in payload or ():
+            person = (item or {}).get("person") or {}
+            role = (item or {}).get("type")
+            person_id = person.get("id")
+            if not role or not isinstance(person_id, int):
+                continue
+            crew.append(
+                TvMazeCrew(
+                    show_id=show_id,
+                    role=str(role),
+                    person_id=person_id,
+                    person_name=str(person.get("name") or ""),
+                )
+            )
+        return crew
+
+    def get_person_credits(self, person_id: int, *, refresh: bool = False) -> list[TvMazeCredit]:
+        """Все работы человека: другие сериалы приходят отсюда."""
+        payload = self._get(f"/people/{int(person_id)}/crewcredits", refresh=refresh)
+        credits: list[TvMazeCredit] = []
+        for item in payload or ():
+            role = (item or {}).get("type")
+            link = ((item or {}).get("_links") or {}).get("show") or {}
+            href = str(link.get("href") or "")
+            match = _SHOW_HREF_RE.search(href)
+            if not role or match is None:
+                continue
+            credits.append(
+                TvMazeCredit(
+                    person_id=person_id,
+                    role=str(role),
+                    show_id=int(match.group(1)),
+                    show_name=str(link.get("name") or ""),
+                )
+            )
+        return credits
+
     def get_schedule(self, date: str | None = None, *, refresh: bool = False) -> list[ScheduleEntry]:
         """Расписание на день. Без даты TVmaze отдаёт всё, что идёт сейчас."""
         params = {"date": date} if date else None
@@ -398,3 +460,6 @@ def _retry_after(response: Any, attempt: int) -> float:
                 when = when.replace(tzinfo=timezone.utc)
             return min(MAX_SLEEP, max(0.0, (when - datetime.now(timezone.utc)).total_seconds()))
     return _backoff(attempt)
+
+#: Роль, по которой сериал считают «тем же авторством».
+CREATOR_ROLE = "Creator"

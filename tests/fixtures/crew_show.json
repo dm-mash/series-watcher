@@ -1,0 +1,1427 @@
+[
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 6048,
+      "url": "https://www.tvmaze.com/people/6048/john-cameron",
+      "name": "John Cameron",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1958-08-31",
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/39/99593.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/39/99593.jpg"
+      },
+      "updated": 1772170146,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/6048"
+        }
+      }
+    }
+  },
+  {
+    "type": "Casting Associate",
+    "person": {
+      "id": 6416,
+      "url": "https://www.tvmaze.com/people/6416/rick-messina",
+      "name": "Rick Messina",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/167/419967.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/167/419967.jpg"
+      },
+      "updated": 1762144506,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/6416"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Executive Producer",
+    "person": {
+      "id": 7136,
+      "url": "https://www.tvmaze.com/people/7136/kari-drake",
+      "name": "Kari Drake",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/615/1539979.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/615/1539979.jpg"
+      },
+      "updated": 1772405941,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/7136"
+        }
+      }
+    }
+  },
+  {
+    "type": "Costume Designer",
+    "person": {
+      "id": 10243,
+      "url": "https://www.tvmaze.com/people/10243/sarah-edwards",
+      "name": "Sarah Edwards",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": null,
+      "image": null,
+      "updated": 1737346528,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/10243"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 19696,
+      "url": "https://www.tvmaze.com/people/19696/patricia-arquette",
+      "name": "Patricia Arquette",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1968-04-08",
+      "deathday": null,
+      "gender": "Female",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/9/23044.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/9/23044.jpg"
+      },
+      "updated": 1781478955,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/19696"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 26213,
+      "url": "https://www.tvmaze.com/people/26213/andrew-colville",
+      "name": "Andrew Colville",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": null,
+      "image": null,
+      "updated": 1772406037,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/26213"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 31964,
+      "url": "https://www.tvmaze.com/people/31964/adam-scott",
+      "name": "Adam Scott",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1973-04-03",
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/3/8618.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/3/8618.jpg"
+      },
+      "updated": 1788382181,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/31964"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 31964,
+      "url": "https://www.tvmaze.com/people/31964/adam-scott",
+      "name": "Adam Scott",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1973-04-03",
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/3/8618.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/3/8618.jpg"
+      },
+      "updated": 1788382181,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/31964"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 32313,
+      "url": "https://www.tvmaze.com/people/32313/beau-willimon",
+      "name": "Beau Willimon",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1977-10-26",
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/163/408903.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/163/408903.jpg"
+      },
+      "updated": 1740423865,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/32313"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 33271,
+      "url": "https://www.tvmaze.com/people/33271/mark-friedman",
+      "name": "Mark Friedman",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345433,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/33271"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Executive Producer",
+    "person": {
+      "id": 39267,
+      "url": "https://www.tvmaze.com/people/39267/adam-countee",
+      "name": "Adam Countee",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/113/283551.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/113/283551.jpg"
+      },
+      "updated": 1737345993,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/39267"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 39582,
+      "url": "https://www.tvmaze.com/people/39582/ben-stiller",
+      "name": "Ben Stiller",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1965-11-30",
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/10/25671.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/10/25671.jpg"
+      },
+      "updated": 1790392533,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/39582"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 50636,
+      "url": "https://www.tvmaze.com/people/50636/chris-black",
+      "name": "Chris Black",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1772178938,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/50636"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 53282,
+      "url": "https://www.tvmaze.com/people/53282/caroline-baron",
+      "name": "Caroline Baron",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": null,
+      "image": null,
+      "updated": 1763344861,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/53282"
+        }
+      }
+    }
+  },
+  {
+    "type": "Unit Production Manager",
+    "person": {
+      "id": 53282,
+      "url": "https://www.tvmaze.com/people/53282/caroline-baron",
+      "name": "Caroline Baron",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": null,
+      "image": null,
+      "updated": 1763344861,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/53282"
+        }
+      }
+    }
+  },
+  {
+    "type": "Stunt Coordinator",
+    "person": {
+      "id": 58038,
+      "url": "https://www.tvmaze.com/people/58038/dean-neistat",
+      "name": "Dean Neistat",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/249/623602.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/249/623602.jpg"
+      },
+      "updated": 1778851097,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/58038"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Executive Producer",
+    "person": {
+      "id": 103999,
+      "url": "https://www.tvmaze.com/people/103999/jill-footlick",
+      "name": "Jill Footlick",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1748019128,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/103999"
+        }
+      }
+    }
+  },
+  {
+    "type": "Consulting Producer",
+    "person": {
+      "id": 125646,
+      "url": "https://www.tvmaze.com/people/125646/kc-perry",
+      "name": "K.C. Perry",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/115/288900.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/115/288900.jpg"
+      },
+      "updated": 1737346286,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/125646"
+        }
+      }
+    }
+  },
+  {
+    "type": "Editor",
+    "person": {
+      "id": 139022,
+      "url": "https://www.tvmaze.com/people/139022/erica-freed-marker",
+      "name": "Erica Freed Marker",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1748512976,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/139022"
+        }
+      }
+    }
+  },
+  {
+    "type": "Creator",
+    "person": {
+      "id": 169453,
+      "url": "https://www.tvmaze.com/people/169453/dan-erickson",
+      "name": "Dan Erickson",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345433,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/169453"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 169453,
+      "url": "https://www.tvmaze.com/people/169453/dan-erickson",
+      "name": "Dan Erickson",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345433,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/169453"
+        }
+      }
+    }
+  },
+  {
+    "type": "Casting",
+    "person": {
+      "id": 171893,
+      "url": "https://www.tvmaze.com/people/171893/rachel-tenner",
+      "name": "Rachel Tenner",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1762144506,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/171893"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 188844,
+      "url": "https://www.tvmaze.com/people/188844/jordan-tappis",
+      "name": "Jordan Tappis",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": null,
+      "image": null,
+      "updated": 1737345641,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/188844"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 190569,
+      "url": "https://www.tvmaze.com/people/190569/samuel-donovan",
+      "name": "Samuel Donovan",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": {
+        "medium": "https://static.tvmaze.com/uploads/images/medium_portrait/534/1336659.jpg",
+        "original": "https://static.tvmaze.com/uploads/images/original_untouched/534/1336659.jpg"
+      },
+      "updated": 1737345679,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/190569"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 195992,
+      "url": "https://www.tvmaze.com/people/195992/sean-fogel",
+      "name": "Sean Fogel",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1763344616,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/195992"
+        }
+      }
+    }
+  },
+  {
+    "type": "Assistant Production Manager",
+    "person": {
+      "id": 195992,
+      "url": "https://www.tvmaze.com/people/195992/sean-fogel",
+      "name": "Sean Fogel",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1763344616,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/195992"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 200283,
+      "url": "https://www.tvmaze.com/people/200283/jackie-cohn",
+      "name": "Jackie Cohn",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1787209379,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/200283"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Executive Producer",
+    "person": {
+      "id": 202654,
+      "url": "https://www.tvmaze.com/people/202654/mohamad-el-masri",
+      "name": "Mohamad El Masri",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1758800949,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/202654"
+        }
+      }
+    }
+  },
+  {
+    "type": "Re-Recording Mixer",
+    "person": {
+      "id": 204862,
+      "url": "https://www.tvmaze.com/people/204862/bob-chefalas",
+      "name": "Bob Chefalas",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1788042116,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/204862"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 205070,
+      "url": "https://www.tvmaze.com/people/205070/tyson-bidner",
+      "name": "Tyson Bidner",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1778529805,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/205070"
+        }
+      }
+    }
+  },
+  {
+    "type": "Consulting Producer",
+    "person": {
+      "id": 209019,
+      "url": "https://www.tvmaze.com/people/209019/erin-wagoner",
+      "name": "Erin Wagoner",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1737346286,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/209019"
+        }
+      }
+    }
+  },
+  {
+    "type": "Sound Designer",
+    "person": {
+      "id": 217315,
+      "url": "https://www.tvmaze.com/people/217315/jacob-ribicoff",
+      "name": "Jacob Ribicoff",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346948,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/217315"
+        }
+      }
+    }
+  },
+  {
+    "type": "Sound Effects Editor",
+    "person": {
+      "id": 217315,
+      "url": "https://www.tvmaze.com/people/217315/jacob-ribicoff",
+      "name": "Jacob Ribicoff",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346948,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/217315"
+        }
+      }
+    }
+  },
+  {
+    "type": "Supervising Sound Editor",
+    "person": {
+      "id": 217315,
+      "url": "https://www.tvmaze.com/people/217315/jacob-ribicoff",
+      "name": "Jacob Ribicoff",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346948,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/217315"
+        }
+      }
+    }
+  },
+  {
+    "type": "Director Of Photography",
+    "person": {
+      "id": 219337,
+      "url": "https://www.tvmaze.com/people/219337/jessica-lee-gagne",
+      "name": "Jessica Lee Gagné",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1737345863,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/219337"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 219337,
+      "url": "https://www.tvmaze.com/people/219337/jessica-lee-gagne",
+      "name": "Jessica Lee Gagné",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1737345863,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/219337"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Producer",
+    "person": {
+      "id": 219339,
+      "url": "https://www.tvmaze.com/people/219339/geoffrey-richman",
+      "name": "Geoffrey Richman",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345958,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/219339"
+        }
+      }
+    }
+  },
+  {
+    "type": "Editor",
+    "person": {
+      "id": 219339,
+      "url": "https://www.tvmaze.com/people/219339/geoffrey-richman",
+      "name": "Geoffrey Richman",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345958,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/219339"
+        }
+      }
+    }
+  },
+  {
+    "type": "Makeup Department Head",
+    "person": {
+      "id": 219340,
+      "url": "https://www.tvmaze.com/people/219340/bernadette-mazur",
+      "name": "Bernadette Mazur",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1645838225,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/219340"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 219344,
+      "url": "https://www.tvmaze.com/people/219344/nicholas-weinstock",
+      "name": "Nicholas Weinstock",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345369,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/219344"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 220368,
+      "url": "https://www.tvmaze.com/people/220368/richard-schwartz",
+      "name": "Richard Schwartz",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": "1975-12-13",
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345433,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/220368"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 220468,
+      "url": "https://www.tvmaze.com/people/220468/gerry-robert-byrne",
+      "name": "Gerry Robert Byrne",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1645838055,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/220468"
+        }
+      }
+    }
+  },
+  {
+    "type": "Music Supervisor",
+    "person": {
+      "id": 220473,
+      "url": "https://www.tvmaze.com/people/220473/george-drakoulias",
+      "name": "George Drakoulias",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346627,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/220473"
+        }
+      }
+    }
+  },
+  {
+    "type": "Executive Producer",
+    "person": {
+      "id": 239635,
+      "url": "https://www.tvmaze.com/people/239635/john-lesher",
+      "name": "John Lesher",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345369,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/239635"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 259579,
+      "url": "https://www.tvmaze.com/people/259579/wei-ning-yu",
+      "name": "Wei-Ning Yu",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1739541298,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/259579"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 278479,
+      "url": "https://www.tvmaze.com/people/278479/aoife-mcardle",
+      "name": "Aoife McArdle",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1647820727,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/278479"
+        }
+      }
+    }
+  },
+  {
+    "type": "Visual Effects Supervisor",
+    "person": {
+      "id": 308711,
+      "url": "https://www.tvmaze.com/people/308711/eric-leven",
+      "name": "Eric Leven",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346627,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/308711"
+        }
+      }
+    }
+  },
+  {
+    "type": "Music",
+    "person": {
+      "id": 317998,
+      "url": "https://www.tvmaze.com/people/317998/theodore-shapiro",
+      "name": "Theodore Shapiro",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345863,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/317998"
+        }
+      }
+    }
+  },
+  {
+    "type": "Producer",
+    "person": {
+      "id": 330473,
+      "url": "https://www.tvmaze.com/people/330473/amanda-overton",
+      "name": "Amanda Overton",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1732471723,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/330473"
+        }
+      }
+    }
+  },
+  {
+    "type": "Music Editor",
+    "person": {
+      "id": 336678,
+      "url": "https://www.tvmaze.com/people/336678/felipe-pacheco",
+      "name": "Felipe Pacheco",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346909,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/336678"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Producer",
+    "person": {
+      "id": 339463,
+      "url": "https://www.tvmaze.com/people/339463/paul-leonardo-jr",
+      "name": "Paul Leonardo Jr.",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1787864151,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339463"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Producer",
+    "person": {
+      "id": 339474,
+      "url": "https://www.tvmaze.com/people/339474/katie-pruitt",
+      "name": "Katie Pruitt",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1737345958,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339474"
+        }
+      }
+    }
+  },
+  {
+    "type": "Supervising Producer",
+    "person": {
+      "id": 339475,
+      "url": "https://www.tvmaze.com/people/339475/anna-ouyang-moench",
+      "name": "Anna Ouyang Moench",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1778838497,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339475"
+        }
+      }
+    }
+  },
+  {
+    "type": "Staff Writer",
+    "person": {
+      "id": 339475,
+      "url": "https://www.tvmaze.com/people/339475/anna-ouyang-moench",
+      "name": "Anna Ouyang Moench",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1778838497,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339475"
+        }
+      }
+    }
+  },
+  {
+    "type": "Production Designer",
+    "person": {
+      "id": 339476,
+      "url": "https://www.tvmaze.com/people/339476/jeremy-hindle",
+      "name": "Jeremy Hindle",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737345863,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339476"
+        }
+      }
+    }
+  },
+  {
+    "type": "Casting",
+    "person": {
+      "id": 339477,
+      "url": "https://www.tvmaze.com/people/339477/bess-fifer",
+      "name": "Bess Fifer",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1737345863,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339477"
+        }
+      }
+    }
+  },
+  {
+    "type": "Unit Production Manager",
+    "person": {
+      "id": 339478,
+      "url": "https://www.tvmaze.com/people/339478/kristyn-macready",
+      "name": "Kristyn MacReady",
+      "country": {
+        "name": "United States",
+        "code": "US",
+        "timezone": "America/New_York"
+      },
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1748019115,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339478"
+        }
+      }
+    }
+  },
+  {
+    "type": "Editor",
+    "person": {
+      "id": 339485,
+      "url": "https://www.tvmaze.com/people/339485/gershon-hinkson",
+      "name": "Gershon Hinkson",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1645200806,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/339485"
+        }
+      }
+    }
+  },
+  {
+    "type": "First Assistant Director",
+    "person": {
+      "id": 340335,
+      "url": "https://www.tvmaze.com/people/340335/katie-carroll",
+      "name": "Katie Carroll",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1645838144,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/340335"
+        }
+      }
+    }
+  },
+  {
+    "type": "Second Assistant Director",
+    "person": {
+      "id": 340336,
+      "url": "https://www.tvmaze.com/people/340336/matt-lake",
+      "name": "Matt Lake",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1746674582,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/340336"
+        }
+      }
+    }
+  },
+  {
+    "type": "Hair Department Head",
+    "person": {
+      "id": 340337,
+      "url": "https://www.tvmaze.com/people/340337/anita-lausevic",
+      "name": "Anita Lausevic",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1780069078,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/340337"
+        }
+      }
+    }
+  },
+  {
+    "type": "Music Editor",
+    "person": {
+      "id": 340338,
+      "url": "https://www.tvmaze.com/people/340338/missy-cohen",
+      "name": "Missy Cohen",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1788042116,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/340338"
+        }
+      }
+    }
+  },
+  {
+    "type": "Music Editor",
+    "person": {
+      "id": 340339,
+      "url": "https://www.tvmaze.com/people/340339/sam-zeines",
+      "name": "Sam Zeines",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346842,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/340339"
+        }
+      }
+    }
+  },
+  {
+    "type": "Makeup Department Head",
+    "person": {
+      "id": 348254,
+      "url": "https://www.tvmaze.com/people/348254/judy-chin",
+      "name": "Judy Chin",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1787864828,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/348254"
+        }
+      }
+    }
+  },
+  {
+    "type": "Second Assistant Director",
+    "person": {
+      "id": 353305,
+      "url": "https://www.tvmaze.com/people/353305/amanda-cheng",
+      "name": "Amanda Cheng",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1760584601,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/353305"
+        }
+      }
+    }
+  },
+  {
+    "type": "Co-Producer",
+    "person": {
+      "id": 376880,
+      "url": "https://www.tvmaze.com/people/376880/diana-dekajlo",
+      "name": "Diana Dekajlo",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1737345887,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/376880"
+        }
+      }
+    }
+  },
+  {
+    "type": "First Assistant Director",
+    "person": {
+      "id": 445577,
+      "url": "https://www.tvmaze.com/people/445577/justin-bischoff",
+      "name": "Justin Bischoff",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346393,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/445577"
+        }
+      }
+    }
+  },
+  {
+    "type": "Assistant Production Manager",
+    "person": {
+      "id": 445578,
+      "url": "https://www.tvmaze.com/people/445578/alexandra-vivas",
+      "name": "Alexandra Vivas",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Female",
+      "image": null,
+      "updated": 1763344616,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/445578"
+        }
+      }
+    }
+  },
+  {
+    "type": "Visual Effects Supervisor",
+    "person": {
+      "id": 445579,
+      "url": "https://www.tvmaze.com/people/445579/alex-lemke",
+      "name": "Alex Lemke",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346627,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/445579"
+        }
+      }
+    }
+  },
+  {
+    "type": "Visual Effects Producer",
+    "person": {
+      "id": 445580,
+      "url": "https://www.tvmaze.com/people/445580/sean-findley",
+      "name": "Sean FIndley",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346627,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/445580"
+        }
+      }
+    }
+  },
+  {
+    "type": "Hair Department Head",
+    "person": {
+      "id": 445581,
+      "url": "https://www.tvmaze.com/people/445581/jon-carter",
+      "name": "Jon Carter",
+      "country": null,
+      "birthday": null,
+      "deathday": null,
+      "gender": "Male",
+      "image": null,
+      "updated": 1737346768,
+      "_links": {
+        "self": {
+          "href": "https://api.tvmaze.com/people/445581"
+        }
+      }
+    }
+  }
+]
