@@ -9,9 +9,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Sequence
 
 from .config import Config
 from .db import TELEGRAM_CHANNEL, Database, Episode, Show, TrackedShow, tracked_shows, utcnow
+from .nlu import (
+    ADD_SHOW,
+    DIGEST,
+    MARK_WATCHED,
+    RECOMMEND,
+    UNSUBSCRIBE,
+    WHAT_NEW,
+    WHERE_TO_WATCH,
+    Intent,
+    buttons_for,
+)
 from .notify import Notifier, footer
 from .sources import SourceAnswer, SourceSet
 from .tvmaze import TvMazeClient, TvMazeError, TvMazeShow, normalize_name
@@ -86,6 +98,14 @@ class RunReport:
     @property
     def quiet(self) -> bool:
         return self.deferred > 0
+
+
+@dataclass(frozen=True)
+class Reply:
+    """Ответ разговорному слою: текст и кнопки, когда разбор неуверенный."""
+
+    text: str
+    buttons: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass
@@ -281,6 +301,113 @@ class SeriesWatcher:
         lines.extend(answer.lines())
         return footer(lines)
 
+    def handle(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        """Исполнить разобранное намерение и вернуть ответ."""
+        handlers = {
+            WHAT_NEW: self._answer_what_new,
+            DIGEST: self._answer_digest,
+            WHERE_TO_WATCH: self._answer_where_to_watch,
+            ADD_SHOW: self._answer_add_show,
+            UNSUBSCRIBE: self._answer_unsubscribe,
+            MARK_WATCHED: self._answer_mark_watched,
+            RECOMMEND: self._answer_recommend,
+        }
+        handler = handlers.get(intent.name)
+        if handler is None:
+            return Reply(
+                text=footer(["Не понял, что нужно. Напишите проще, например «что нового»."]),
+                buttons=buttons_for(intent),
+            )
+        return handler(intent, now=now)
+
+    def _answer_what_new(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        report = self.poll(now=now)
+        if not report.due:
+            return Reply(text=footer(["Пока ничего нового не вышло."]))
+        lines = ["Что вышло:"]
+        for item in report.due:
+            title = f" «{item.episode.name}»" if item.episode.name else ""
+            lines.append(
+                f"{item.show.name} — {item.episode.code}{title} — "
+                f"{_when(item.episode.airstamp, self.config)}"
+            )
+        if len(report.due) == 1 and self.sources is not None:
+            lines.extend(self.where_to_watch(report.due[0].show).lines())
+        return Reply(text=footer(lines))
+
+    def _answer_digest(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        return Reply(text=self.digest(days=7, now=now))
+
+    def _answer_where_to_watch(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        if intent.show:
+            found = self.db.find_shows(intent.show)
+            if not found:
+                return Reply(text=footer([f"«{intent.show}» не отслеживается."]))
+            shows = found
+        else:
+            shows = self.db.list_shows()
+        if not shows:
+            return Reply(text=footer(["Список отслеживаемых пуст."]))
+
+        lines: list[str] = []
+        for show in shows:
+            lines.append(show.name)
+            answer = self.where_to_watch(show)
+            if answer.offers:
+                lines.extend(f"  {offer.line()} — {offer.url}" for offer in answer.offers)
+            else:
+                lines.append("  " + (answer.lines() or ["где смотреть: источники молчат"])[0])
+        return Reply(text=footer(lines))
+
+    def _answer_add_show(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        if not intent.show:
+            return Reply(text=footer(["Какой сериал добавить?"]))
+        result = self.add_show(intent.show)
+        if result.status == "not_found":
+            return Reply(text=footer([f"По запросу «{intent.show}» ничего нет."]))
+        if result.status == "needs_choice":
+            lines = [result.message]
+            buttons = []
+            for number, candidate in enumerate(result.candidates, start=1):
+                lines.append(f"{number}. {candidate.label}")
+                buttons.append((f"{number}. {candidate.show.name}", f"add {candidate.show.id}"))
+            return Reply(text=footer(lines), buttons=tuple(buttons))
+        assert result.show is not None
+        verb = "Уже отслеживается" if result.status == "exists" else "Добавлен"
+        return Reply(text=footer([f"{verb}: {result.show.name}", result.show.url or ""]))
+
+    def _answer_unsubscribe(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        if not intent.show:
+            return Reply(text=footer(["Какой сериал перестать отслеживать?"]))
+        found = self.db.find_shows(intent.show)
+        if not found:
+            return Reply(text=footer([f"«{intent.show}» не отслеживается."]))
+        names = []
+        for show in found:
+            self.db.remove_show(show.id)
+            names.append(show.name)
+        return Reply(text=footer([f"Больше не отслеживаю: {', '.join(names)}"]))
+
+    def _answer_mark_watched(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        shows = self.db.find_shows(intent.show) if intent.show else self.db.list_shows()
+        if not shows:
+            return Reply(text=footer(["Нечего отмечать: список пуст."]))
+        target = shows[0]
+        episodes = self.db.list_episodes(target.id)
+        candidates = _episodes_for(episodes, intent.season, intent.number)
+        if not candidates and intent.number is not None:
+            # У сериалов вроде «Beyond the Gates» сезон — это год, и его не назовут.
+            candidates = _episodes_for(episodes, None, intent.number)
+        if not candidates:
+            return Reply(text=footer([f"Не нашёл такой эпизод у «{target.name}»."]))
+        for episode in candidates:
+            self.db.mark_watched(episode.id)
+        names = ", ".join(f"{item.code}" for item in candidates)
+        return Reply(text=footer([f"Отметил просмотренным: {target.name} — {names}"]))
+
+    def _answer_recommend(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        return Reply(text=footer(["Рекомендации ещё не сделаны: следующий этап."]))
+
     def _poll_show(self, show: Show) -> ShowPoll:
         try:
             fresh = self.tvmaze.get_show(show.tvmaze_id)
@@ -318,3 +445,12 @@ def _when(value: datetime | None, config: Config) -> str:
     if value is None:
         return "время неизвестно"
     return value.astimezone(config.tz).strftime("%d.%m.%Y %H:%M")
+
+
+def _episodes_for(episodes: Sequence[Episode], season: int | None, number: int | None) -> list[Episode]:
+    return [
+        episode
+        for episode in episodes
+        if (season is None or episode.season == season)
+        and (number is None or episode.number == number)
+    ]

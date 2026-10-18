@@ -8,9 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence, TextIO
 
+from .bot import Bot
 from .config import Config, ConfigError
 from .db import Database, Show, TrackedShow
-from .notify import Notifier
+from .llm import LLMClient
+from .notify import Notifier, NotifyError, TelegramApi
 from .service import AddResult, SeriesWatcher
 from .sources import SourceSet
 from .sources.custom import CustomSource
@@ -55,6 +57,10 @@ def build_parser() -> argparse.ArgumentParser:
     digest = sub.add_parser("digest", help="сводка по ближайшим дням")
     digest.add_argument("--days", type=int, default=7, help="сколько дней вперёд (по умолчанию 7)")
     digest.add_argument("--send", action="store_true", help="отправить в Telegram, а не напечатать")
+
+    bot = sub.add_parser("bot", help="разговорный слой: опрос Telegram и ответы")
+    bot.add_argument("--once", action="store_true", help="один заход и выход")
+    bot.add_argument("--timeout", type=int, default=25, help="long polling, секунд (по умолчанию 25)")
     return parser
 
 
@@ -97,6 +103,9 @@ def main(
         ]
     )
     watcher = SeriesWatcher(config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources)
+    telegram = TelegramApi(config, notifier.client, token=config.telegram_bot_token)
+    llm = LLMClient(config, transport=transport)
+    bot = Bot(config, watcher, telegram, llm=llm)
     try:
         if args.command == "add":
             return _cmd_add(watcher, config, args, out, err)
@@ -108,13 +117,20 @@ def main(
             return _cmd_run(watcher, config, args, out, err)
         if args.command == "digest":
             return _cmd_digest(watcher, config, args, out, err)
+        if args.command == "bot":
+            return _cmd_bot(bot, args, out, err)
     except TvMazeError as exc:
         print(f"TVmaze: {exc}", file=err)
+        return EXIT_ERROR
+    except NotifyError as exc:
+        print(f"Telegram: {exc}", file=err)
         return EXIT_ERROR
     except ConfigError as exc:
         print(f"Ошибка: {exc}", file=err)
         return EXIT_ERROR
     finally:
+        llm.close()
+        telegram.close()
         notifier.close()
         tvmaze.close()
         db.close()
@@ -284,6 +300,21 @@ def _cmd_digest(watcher: SeriesWatcher, config: Config, args: argparse.Namespace
         print(f"Дайджест не отправлен: {detail}", file=err)
         return EXIT_ERROR
     print("Дайджест отправлен", file=out)
+    return EXIT_OK
+
+
+def _cmd_bot(bot: Bot, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
+    if not bot.usable:
+        print(
+            "боту нужен TELEGRAM_BOT_TOKEN: без него некуда спросить и некуда ответить",
+            file=err,
+        )
+        return EXIT_ERROR
+    try:
+        bot.run(once=args.once, poll_timeout=args.timeout)
+    except KeyboardInterrupt:  # Ctrl-C — обычное дело для демона
+        print("остановлено", file=out)
+        return EXIT_OK
     return EXIT_OK
 
 

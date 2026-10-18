@@ -237,3 +237,9 @@ def test_run_rejects_broken_now(cli, fake_tvmaze):
     code, _, err = cli("run", "--now", "вчера вечером")
     assert code == EXIT_ERROR
     assert "ISO 8601" in err
+
+
+def test_bot_without_token_reports_plainly(cli):
+    code, _, err = cli("bot", "--once")
+    assert code == EXIT_ERROR
+    assert "TELEGRAM_BOT_TOKEN" in err

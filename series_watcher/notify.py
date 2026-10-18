@@ -42,6 +42,7 @@ class Notifier:
         db: Database,
         *,
         transport: Any = None,
+        client: Any = None,
         token: str | None = None,
         chat_id: int | str | None = None,
     ) -> None:
@@ -51,22 +52,28 @@ class Notifier:
         self._db = db
         self._token = token if token is not None else config.telegram_bot_token
         self._chat = chat_id if chat_id is not None else config.telegram_chat_id
-        self._client = httpx.Client(
+        self._client = client or httpx.Client(
             timeout=config.http_timeout,
             transport=transport,
             headers={"User-Agent": config.user_agent},
         )
+        self._owns_client = client is None
 
     @property
     def configured(self) -> bool:
         return bool(self._token and self._chat)
 
     @property
+    def client(self) -> Any:
+        return self._client
+
+    @property
     def channel(self) -> str:
         return TELEGRAM_CHANNEL
 
     def close(self) -> None:
-        self._client.close()
+        if self._owns_client:
+            self._client.close()
 
     def is_quiet(self, moment: datetime | None = None) -> bool:
         now = moment or utcnow()
@@ -77,7 +84,9 @@ class Notifier:
         if not self.configured:
             return SendResult(sent=False, detail="нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
         try:
-            self._post(text)
+            TelegramApi(self._config, self._client, token=self._token).send_message(
+                self._chat, text
+            )
         except (NotifyError, TvMazeError) as exc:
             return SendResult(sent=False, detail=str(exc))
         return SendResult(sent=True)
@@ -91,13 +100,46 @@ class Notifier:
             self._db.mark_sent(episode_id, self.channel, kind)
         return result
 
-    def _post(self, text: str) -> None:
+
+class TelegramApi:
+    """Тонкая обвязка Bot API: отправка и разбор входящих."""
+
+    def __init__(self, config: Config, client: Any, *, token: str | None = None) -> None:
+        self._config = config
+        self._client = client
+        self._token = token or config.telegram_bot_token
+
+    @property
+    def token(self) -> str | None:
+        return self._token
+
+    def send_message(
+        self, chat_id: Any, text: str, *, buttons: Sequence[Sequence[str]] = ()
+    ) -> Mapping[str, Any]:
+        payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        keyboard = _keyboard(buttons)
+        if keyboard:
+            payload["reply_markup"] = {"inline_keyboard": keyboard}
+        return self._call("sendMessage", payload)
+
+    def get_updates(self, *, offset: int | None = None, timeout: int = 25) -> list[Mapping[str, Any]]:
+        payload: dict[str, Any] = {"timeout": timeout}
+        if offset is not None:
+            payload["offset"] = offset
+        result = self._call("getUpdates", payload)
+        return [item for item in (result or []) if isinstance(item, Mapping)]
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _call(self, method: str, payload: Mapping[str, Any]) -> Any:
         import httpx
 
-        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
-        payload = {"chat_id": self._chat, "text": text, "disable_web_page_preview": False}
+        if not self._token:
+            raise NotifyError("нет TELEGRAM_BOT_TOKEN")
+        url = f"https://api.telegram.org/bot{self._token}/{method}"
         try:
-            response = self._client.post(url, json=payload)
+            response = self._client.post(url, json=dict(payload))
         except httpx.HTTPError as exc:
             raise NotifyError(f"Telegram не ответил: {exc}") from exc
         if response.status_code >= 400:
@@ -109,3 +151,21 @@ class Notifier:
         if isinstance(body, Mapping) and body.get("ok") is False:
             description = body.get("description") or "без описания"
             raise NotifyError(f"Telegram отказал: {description}")
+        return body.get("result") if isinstance(body, Mapping) else None
+
+
+def _keyboard(buttons: Sequence[Sequence[Any]]) -> list[list[dict[str, str]]]:
+    """Ряды кнопок Telegram.
+
+    Ряд — это либо пары `(подпись, callback)`, либо просто подписи: что именно,
+    решает первый элемент ряда.
+    """
+    rows: list[list[dict[str, str]]] = []
+    for row in buttons:
+        if not row:
+            continue
+        if isinstance(row[0], (tuple, list)):
+            rows.append([{"text": str(label), "callback_data": str(callback)} for label, callback in row])
+        else:
+            rows.append([{"text": str(label), "callback_data": str(label)} for label in row])
+    return rows

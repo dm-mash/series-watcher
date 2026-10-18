@@ -41,6 +41,8 @@ APP_ENV_VARS = (
     "LLM_BASE_URL",
     "LLM_API_KEY",
     "LLM_MODEL",
+    "LLM_TEMPERATURE",
+    "LLM_MAX_TOKENS",
 )
 
 

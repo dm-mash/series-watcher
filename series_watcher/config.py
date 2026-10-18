@@ -89,6 +89,8 @@ class Config:
     llm_base_url: str | None = None
     llm_api_key: str | None = None
     llm_model: str | None = None
+    llm_temperature: float = 0.0
+    llm_max_tokens: int = 700
 
     def __post_init__(self) -> None:
         _check_tz(self.tz_name)
@@ -166,6 +168,8 @@ class Config:
             llm_base_url=_opt(env, "LLM_BASE_URL"),
             llm_api_key=_opt(env, "LLM_API_KEY"),
             llm_model=_opt(env, "LLM_MODEL"),
+            llm_temperature=_float(env, "LLM_TEMPERATURE", 0.0),
+            llm_max_tokens=_int(env, "LLM_MAX_TOKENS", 700),
             justwatch_country=(env.get("JUSTWATCH_COUNTRY") or "RU").upper(),
             custom_sources_path=Path(env.get("CUSTOM_SOURCES_PATH") or Path("data/where_to_watch.json")),
         )

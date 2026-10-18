@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import httpx
 import pytest
 
 from series_watcher.config import Config
@@ -139,3 +140,49 @@ def test_quiet_hours_parsing():
         Config.from_env(env_file=None, environ={"QUIET_HOURS": "ночь"})
     with pytest.raises(ConfigError, match="QUIET_HOURS"):
         Config.from_env(env_file=None, environ={"QUIET_HOURS": "9-99"})
+
+def test_telegram_api_sends_inline_keyboard(db):
+    from series_watcher.notify import TelegramApi
+
+    telegram = FakeTelegram()
+    api = TelegramApi(Config(telegram_bot_token="t"), httpx.Client(transport=telegram.transport()), token="t")
+    api.send_message(42, "выбери", buttons=[[("Да", "yes"), ("Нет", "no")], ["Всё"]])
+
+    payload = telegram.sent[0]
+    assert payload["chat_id"] == 42
+    assert payload["reply_markup"]["inline_keyboard"] == [
+        [{"text": "Да", "callback_data": "yes"}, {"text": "Нет", "callback_data": "no"}],
+        [{"text": "Всё", "callback_data": "Всё"}],
+    ]
+
+
+def test_telegram_api_reads_updates(db):
+    from series_watcher.notify import TelegramApi
+
+    class Updates(FakeTelegram):
+        def transport(self):
+            import httpx
+
+            def handler(request: httpx.Request) -> httpx.Response:
+                self.sent.append(request.url.path)
+                return httpx.Response(
+                    200, json={"ok": True, "result": [{"update_id": 7, "message": {"text": "дайджест"}}]}
+                )
+
+            return httpx.MockTransport(handler)
+
+    fake = Updates()
+    api = TelegramApi(Config(telegram_bot_token="t"), httpx.Client(transport=fake.transport()), token="t")
+
+    updates = api.get_updates(offset=7, timeout=5)
+
+    assert updates[0]["update_id"] == 7
+    assert fake.sent[0].endswith("/getUpdates")
+
+
+def test_telegram_api_without_token_is_a_clear_error(db):
+    from series_watcher.notify import NotifyError, TelegramApi
+
+    api = TelegramApi(Config(), httpx.Client(transport=FakeTelegram().transport()))
+    with pytest.raises(NotifyError, match="TELEGRAM_BOT_TOKEN"):
+        api.send_message(1, "привет")

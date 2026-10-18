@@ -259,6 +259,19 @@ class Database:
         ).fetchone()
         return _row_to_show(row) if row else None
 
+    def find_shows(self, query: str) -> list[Show]:
+        """Отслеживаемые сериалы по названию: сначала точное совпадение."""
+        from .tvmaze import normalize_name
+
+        needle = normalize_name(query)
+        if not needle:
+            return []
+        shows = self.list_shows()
+        exact = [show for show in shows if normalize_name(show.name) == needle]
+        if exact:
+            return exact
+        return [show for show in shows if needle in normalize_name(show.name)]
+
     def list_shows(self) -> list[Show]:
         rows = self._conn.execute(
             f"SELECT {SHOW_COLUMNS} FROM shows ORDER BY added_at, id"
