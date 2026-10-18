@@ -1,10 +1,11 @@
 """Рекомендации: авторство, жанры, объяснение, отказы.
 
-Три уровня сигналов, и подбор работает при любом наборе ключей:
+Два сигнала, оба из TVmaze, без единого ключа:
 
-1. `Creator` из TVmaze — есть почти всегда, ключ не нужен;
-2. режиссёры и сценаристы из TMDB — точная находка, нужен ключ;
-3. жанры — страховка, когда ключа нет или сериал в TMDB не нашёлся.
+1. авторство — кто работал над нашими сериалами и над чем ещё работал
+   (`/shows/{id}/crew` и `/people/{id}/crewcredits`), с ролями: создатель весит
+   больше, режиссёр и сценарист — меньше;
+2. жанры — страховка, когда авторство ничего не дало.
 
 Актёров нет: они пересекаются у всего подряд. Объяснение собирается из полей
 ответа API, а не выдумывается моделью.
@@ -18,11 +19,45 @@ from dataclasses import dataclass
 from typing import Iterable, Sequence
 
 from .config import Config
-from .db import Database
-from .tmdb import TmdbClient, TmdbError
-from .tvmaze import CREATOR_ROLE, TvMazeClient, TvMazeShow
+from .db import Database, Show
+from .tvmaze import TvMazeClient, TvMazeShow
 
 SCRIPTED = "Scripted"
+
+CREATOR, DIRECTOR, WRITER, PRODUCER = "creator", "director", "writer", "producer"
+
+#: Вес семейства роли в подборе.
+ROLE_WEIGHTS = {CREATOR: 3.0, DIRECTOR: 2.0, WRITER: 2.0, PRODUCER: 1.0}
+ROLE_LABELS = {
+    CREATOR: "создатель",
+    DIRECTOR: "режиссёр",
+    WRITER: "сценарист",
+    PRODUCER: "продюсер",
+}
+
+#: Сколько продюсеров берём с одного сериала: у сериала их десятки, а толку
+#: от пятого по шестого уже нет, а запросов — на каждый отдельный.
+MAX_PRODUCERS_PER_SHOW = 5
+
+
+def role_kind(role: str) -> str | None:
+    """Род роли из `/shows/{id}/crew`.
+
+    В TVmaze роли гранулярные и вариантов много: у одного сериала «Executive
+    Producer», «Co-Producer», «Staff Writer», «First Assistant Director». Поэтому
+    сравниваем по семейству, а не по точному названию. «Director Of Photography»
+    и «First Assistant Director» режиссёрами не считаются — это другие должности.
+    """
+    text = (role or "").casefold()
+    if text == "creator":
+        return CREATOR
+    if text == "director":
+        return DIRECTOR
+    if "writer" in text or text in {"screenplay", "story", "teleplay"}:
+        return WRITER
+    if "producer" in text:
+        return PRODUCER
+    return None
 DEFAULT_MIN_RATING = 6.5
 #: Сколько дней расписания смотреть: три дня — это уже три запроса к TVmaze.
 DEFAULT_SCHEDULE_DAYS = 3
@@ -39,6 +74,11 @@ class Recommendation:
     reasons: tuple[str, ...]
     via: str
 
+    @property
+    def summary(self) -> str | None:
+        """Сводка TVmaze: из неё модель делает краткую строку о сериале."""
+        return self.show.summary
+
     def line(self) -> str:
         meta = ", ".join(self.show.genres[:3])
         parts = [self.show.name]
@@ -49,12 +89,20 @@ class Recommendation:
         return " ".join(parts)
 
 
+@dataclass(frozen=True)
+class Person:
+    """Человек из состава сериала: имя и семейства ролей."""
+
+    id: int
+    name: str
+    roles: set[str]
+
+
 @dataclass
 class Recommender:
     config: Config
     db: Database
     tvmaze: TvMazeClient
-    tmdb: TmdbClient | None = None
     #: Даты расписания вместо ближайших дней: проверки не зависят от «сегодня».
     schedule_dates: tuple[str, ...] | None = None
 
@@ -64,28 +112,40 @@ class Recommender:
         limit: int = 5,
         min_rating: float = DEFAULT_MIN_RATING,
         pool_size: int = DEFAULT_POOL,
-        use_tmdb: bool = True,
         schedule_days: int = DEFAULT_SCHEDULE_DAYS,
+        focus: Show | None = None,
     ) -> list[Recommendation]:
+        """Подбор по вашему списку: авторство весит больше жанров.
+
+        `focus` — сериал, названный в запросе («похожее на Slow Horses»): тогда
+        сигналы берём только по нему, а не по всей библиотеке. Исключаются всё
+        равно все отслеживаемые — повторно советовать нечего.
+        """
         tracked = self.db.list_shows()
         if not tracked:
             return []
 
+        basis = [focus] if focus is not None else tracked
         excluded = {show.tvmaze_id for show in tracked} | self.db.rejected_ids()
-        genres = Counter(genre for show in tracked for genre in show.genres)
-        creators = self._creators(tracked)
-        creator_shows = self._creator_shows(creators)
-        credits = self._tmdb_credits(tracked) if use_tmdb else {}
+        genres = Counter(genre for show in basis for genre in show.genres)
+        authored = self._authored_shows(self._people(basis))
 
         scored: dict[int, Recommendation] = {}
-        for show in self._pool(tracked, creator_shows, pool_size, schedule_days):
+        for show in self._pool(basis, authored, pool_size, schedule_days):
             if show.id in excluded or show.kind != SCRIPTED:
                 continue
             if show.rating is not None and show.rating < min_rating:
                 continue
 
+            # Авторство — главная причина, поэтому идёт первой.
             reasons: list[str] = []
             score = 0.0
+            credits = _by_weight(authored.get(show.id) or {})
+            for name, roles in credits:
+                for role in sorted(roles, key=lambda item: -ROLE_WEIGHTS.get(item, 0)):
+                    score += ROLE_WEIGHTS.get(role, 0.0)
+                    reasons.append(f"{ROLE_LABELS.get(role, role)}: {name}")
+
             shared = sorted(
                 (genre for genre in show.genres if genres.get(genre)),
                 key=lambda genre: (-genres[genre], genre),
@@ -94,27 +154,18 @@ class Recommender:
                 score += len(shared)
                 reasons.append("жанры: " + ", ".join(shared))
 
-            author = creator_shows.get(show.id)
-            if author:
-                score += 3.0
-                reasons.append("создатель: " + ", ".join(sorted(author)))
-
-            matched = self._credits_match(show, credits) if use_tmdb else ()
-            if matched:
-                score += 2.0
-                reasons.append("режиссёры и сценаристы: " + ", ".join(matched))
-
             if not reasons:
                 continue
             scored[show.id] = Recommendation(
                 show=show,
                 score=score,
-                reasons=tuple(reasons),
-                via="creator" if author else ("tmdb" if matched else "genre"),
+                reasons=tuple(dict.fromkeys(reasons)),
+                via="авторство" if credits else "жанры",
             )
 
         ranked = sorted(scored.values(), key=lambda item: (-item.score, -(item.show.rating or 0)))
         return ranked[:limit]
+
 
     def cold_start(
         self,
@@ -157,58 +208,52 @@ class Recommender:
 
     # --- сигналы ---------------------------------------------------------
 
-    def _creators(self, tracked: Sequence) -> dict[int, str]:
-        """Кто создаёт наши сериалы: id человека -> имя."""
-        creators: dict[int, str] = {}
+    def _people(self, tracked: Sequence) -> dict[int, Person]:
+        """Кто работал над нашими сериалами: id человека -> имя и роли."""
+        people: dict[int, Person] = {}
         for show in tracked:
             try:
                 crew = self.tvmaze.get_crew(show.tvmaze_id)
             except Exception:  # noqa: BLE001 - источник не должен ронять подбор
                 continue
+            producers = 0
             for entry in crew:
-                if entry.role == CREATOR_ROLE:
-                    creators[entry.person_id] = entry.person_name
-        return creators
+                kind = role_kind(entry.role)
+                if kind is None or not entry.person_name:
+                    continue
+                if kind == PRODUCER:
+                    if producers >= MAX_PRODUCERS_PER_SHOW:
+                        continue
+                    producers += 1
+                current = people.setdefault(
+                    entry.person_id, Person(id=entry.person_id, name=entry.person_name, roles=set())
+                )
+                current.roles.add(kind)
+        return people
 
-    def _creator_shows(self, creators: dict[int, str]) -> dict[int, set[str]]:
-        """Другие сериалы тех же создателей: id сериала -> имена авторов."""
-        result: dict[int, set[str]] = {}
-        for person_id, person_name in creators.items():
+    def _authored_shows(self, people: dict[int, Person]) -> dict[int, dict[str, set[str]]]:
+        """Другие работы этих людей: id сериала -> имя -> роли."""
+        result: dict[int, dict[str, set[str]]] = {}
+        for person_id, person in people.items():
             try:
                 credits = self.tvmaze.get_person_credits(person_id)
             except Exception:  # noqa: BLE001
                 continue
             for credit in credits:
-                if credit.role == CREATOR_ROLE:
-                    result.setdefault(credit.show_id, set()).add(person_name)
-        return result
-
-    def _tmdb_credits(self, tracked: Sequence) -> dict[int, tuple[str, ...]]:
-        """Имена режиссёров и сценаристов по сериалам: id TVmaze -> имена."""
-        if self.tmdb is None or not self.tmdb.available():
-            return {}
-        credits: dict[int, tuple[str, ...]] = {}
-        for show in tracked:
-            try:
-                tmdb_id = self.tmdb.find_by_tvdb(show.thetvdb_id)
-                if tmdb_id is None:
+                kind = role_kind(credit.role)
+                if kind is None:
                     continue
-                found = self.tmdb.credits(tmdb_id)
-            except TmdbError:
-                continue
-            names = tuple(sorted(found.names()))
-            if names:
-                credits[show.tvmaze_id] = names
-        return credits
+                result.setdefault(credit.show_id, {}).setdefault(person.name, set()).add(kind)
+        return result
 
     def _pool(
         self,
         tracked: Sequence,
-        creator_shows: dict[int, set[str]],
+        authored: dict[int, dict[str, set[str]]],
         pool_size: int,
         schedule_days: int,
     ) -> list[TvMazeShow]:
-        """Кандидаты: работы создателей плюс всё, что идёт в эфире.
+        """Кандидаты: работы наших авторов плюс всё, что идёт в эфире.
 
         Расписание приходит уже с полными карточками сериалов, поэтому за него
         платим один запрос, а не запрос на каждый сериал.
@@ -217,7 +262,7 @@ class Recommender:
         days = self.schedule_dates if self.schedule_dates is not None else _upcoming(schedule_days)
         for show in _schedule_shows(self.tvmaze, days):
             shows.setdefault(show.id, show)
-        for tvmaze_id in creator_shows:
+        for tvmaze_id in list(authored) + [show.tvmaze_id for show in tracked]:
             if tvmaze_id in shows:
                 continue
             try:
@@ -229,22 +274,18 @@ class Recommender:
         ranked = sorted(shows.values(), key=lambda item: (-(item.rating or 0.0), item.name))
         return ranked[: max(pool_size, 1)]
 
-    def _credits_match(self, show: TvMazeShow, credits: dict[int, tuple[str, ...]]) -> tuple[str, ...]:
-        wanted = {name for names in credits.values() for name in names}
-        if not wanted:
-            return ()
-        try:
-            crew = self.tvmaze.get_crew(show.id)
-        except Exception:  # noqa: BLE001
-            return ()
-        return tuple(
-            sorted({entry.person_name.casefold() for entry in crew if entry.person_name.casefold() in wanted})
-        )
-
 
 def _upcoming(days: int) -> list[str]:
     today = date.today()
     return [(today + timedelta(days=offset)).isoformat() for offset in range(1, days + 1)]
+
+
+def _by_weight(credits: dict[str, set[str]]) -> list[tuple[str, set[str]]]:
+    """Люди по убыванию своей лучшей роли: создатель выше режиссёра."""
+    return sorted(
+        credits.items(),
+        key=lambda item: (-max((ROLE_WEIGHTS.get(role, 0.0) for role in item[1]), default=0.0), item[0]),
+    )
 
 
 def _schedule_shows(tvmaze: TvMazeClient, days: Iterable[str] | None = None) -> list[TvMazeShow]:
