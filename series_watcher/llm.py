@@ -59,6 +59,7 @@ class LLMClient:
             headers={"Content-Type": "application/json", "User-Agent": config.user_agent},
         )
         self._owns_client = client is None
+        self._schema_ok: bool | None = None
 
     @property
     def configured(self) -> bool:
@@ -77,12 +78,7 @@ class LLMClient:
     ) -> Reply:
         if not self.configured:
             raise LLMNotConfigured("не заданы LLM_BASE_URL или LLM_MODEL")
-        payload: dict[str, Any] = {
-            "model": self._config.llm_model,
-            "messages": [dict(message) for message in messages],
-            "temperature": self._config.llm_temperature if temperature is None else temperature,
-            "max_tokens": max_tokens or self._config.llm_max_tokens,
-        }
+        payload = self._payload(messages, temperature=temperature, max_tokens=max_tokens)
         body = self._post(payload)
         return Reply(text=_content(body, payload), payload=body)
 
@@ -94,21 +90,65 @@ class LLMClient:
         name: str = "result",
         temperature: float | None = None,
     ) -> Any:
-        """Ответ строго по схеме: провайдеру отдаётся `response_format`."""
+        """Ответ строго по схеме, а если провайдер её не умеет — по JSON-режиму.
+
+        Строгий `json_schema` поддерживают не все модели (у Groq, например, лишь
+        несколько), поэтому один раз получив отказ, дальше ходим в `json_object`
+        и объясняем формат в самом запросе.
+        """
         if not self.configured:
             raise LLMNotConfigured("не заданы LLM_BASE_URL или LLM_MODEL")
+        if self._schema_ok is False:
+            return self._complete_json_loose(messages, schema, temperature=temperature)
+
+        payload = self._payload(
+            messages,
+            temperature=temperature,
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": name, "strict": True, "schema": dict(schema)},
+            },
+        )
+        try:
+            body = self._post(payload)
+        except LLMError as exc:
+            if "400" not in str(exc):
+                raise
+            self._schema_ok = False
+            return self._complete_json_loose(messages, schema, temperature=temperature)
+        self._schema_ok = True
+        return _parse_json(_content(body, payload))
+
+    def _complete_json_loose(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        schema: Mapping[str, Any],
+        *,
+        temperature: float | None = None,
+    ) -> Any:
+        prompt = _with_schema_instruction(messages, schema)
+        payload = self._payload(
+            prompt, temperature=temperature, response_format={"type": "json_object"}
+        )
+        return _parse_json(_content(self._post(payload), payload))
+
+    def _payload(
+        self,
+        messages: Sequence[Mapping[str, str]],
+        *,
+        temperature: float | None,
+        max_tokens: int | None = None,
+        response_format: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self._config.llm_model,
             "messages": [dict(message) for message in messages],
             "temperature": self._config.llm_temperature if temperature is None else temperature,
-            "max_tokens": self._config.llm_max_tokens,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": name, "strict": True, "schema": dict(schema)},
-            },
+            "max_tokens": max_tokens or self._config.llm_max_tokens,
         }
-        body = self._post(payload)
-        return _parse_json(_content(body, payload))
+        if response_format is not None:
+            payload["response_format"] = dict(response_format)
+        return payload
 
     def _post(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         import httpx
@@ -145,6 +185,22 @@ class LLMClient:
                 raise LLMError("LLM вернул не объект")
             return body
         raise LLMError(f"LLM не ответил: {last}") from last
+
+
+def _with_schema_instruction(
+    messages: Sequence[Mapping[str, str]], schema: Mapping[str, Any]
+) -> list[dict[str, str]]:
+    """В JSON-режиме схему надо назвать словами — иначе модель её не увидит."""
+    note = (
+        "Ответь одним JSON-объектом и больше ничем. "
+        f"Структура ответа: {json.dumps(schema, ensure_ascii=False)}"
+    )
+    result = [dict(message) for message in messages]
+    if result and result[0].get("role") == "system":
+        result[0]["content"] = f"{result[0]['content']}\n\n{note}"
+    else:
+        result.insert(0, {"role": "system", "content": note})
+    return result
 
 
 def _content(body: Mapping[str, Any], payload: Mapping[str, Any]) -> str:

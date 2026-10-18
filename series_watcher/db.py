@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS episodes (
     airtime            TEXT,
     runtime            INTEGER,
     summary            TEXT,
+    summary_ru         TEXT,
     watched_at         TEXT,
     created_at         TEXT    NOT NULL,
     UNIQUE (show_id, season, number)
@@ -165,6 +166,7 @@ class Episode:
     summary: str | None
     watched_at: str | None
     tvmaze_episode_id: int | None
+    summary_ru: str | None = None
 
     @property
     def code(self) -> str:
@@ -371,7 +373,7 @@ class Database:
         rows = self._conn.execute(
             """
             SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, watched_at
+                   airdate, airtime, runtime, summary, summary_ru, watched_at
             FROM episodes WHERE show_id = ? ORDER BY season, number
             """,
             (show_id,),
@@ -383,7 +385,7 @@ class Database:
         row = self._conn.execute(
             """
             SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, watched_at
+                   airdate, airtime, runtime, summary, summary_ru, watched_at
             FROM episodes
             WHERE show_id = ? AND airstamp IS NOT NULL AND airstamp > ?
             ORDER BY airstamp LIMIT 1
@@ -438,7 +440,7 @@ class Database:
         rows = self._conn.execute(
             f"""
             SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, watched_at
+                   airdate, airtime, runtime, summary, summary_ru, watched_at
             FROM episodes e
             WHERE {' AND '.join(clauses)}
             ORDER BY airstamp, show_id, season, number
@@ -452,7 +454,7 @@ class Database:
         rows = self._conn.execute(
             """
             SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
-                   airdate, airtime, runtime, summary, watched_at
+                   airdate, airtime, runtime, summary, summary_ru, watched_at
             FROM episodes
             WHERE airstamp IS NOT NULL AND airstamp >= ? AND airstamp < ?
             ORDER BY airstamp, show_id, season, number
@@ -467,6 +469,19 @@ class Database:
         ]
 
     # --- отправки -------------------------------------------------------
+
+    def get_summary_ru(self, episode_id: int) -> str | None:
+        row = self._conn.execute(
+            "SELECT summary_ru FROM episodes WHERE id = ?", (episode_id,)
+        ).fetchone()
+        return row["summary_ru"] if row else None
+
+    def set_summary_ru(self, episode_id: int, text: str | None) -> None:
+        """Перевод и сжатие описания: один раз сделано — лежит в базе."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE episodes SET summary_ru = ? WHERE id = ?", (text, episode_id)
+            )
 
     def mark_watched(self, episode_id: int, *, watched: bool = True) -> None:
         """Отметка «я посмотрел»: про таком эпизоде больше не напоминаем."""
@@ -615,6 +630,7 @@ def _row_to_episode(row: sqlite3.Row) -> Episode:
         runtime=row["runtime"],
         summary=row["summary"],
         watched_at=row["watched_at"],
+        summary_ru=row["summary_ru"] if "summary_ru" in row.keys() else None,
     )
 
 
