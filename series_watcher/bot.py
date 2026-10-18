@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping
 from .config import Config
 from .db import CHAT_ID_SETTING
 from .llm import LLMClient
-from .notify import TelegramApi
+from .notify import NotifyError, TelegramApi
 from .nlu import ADD_SHOW, Intent, parse
 from .service import Reply, SeriesWatcher
 
@@ -45,6 +45,8 @@ class Bot:
         self._llm = llm
         self._sleep = sleep
         self._offset: int | None = None
+        #: Ошибки отдельных сообщений: одно недоставленное не должно ронять бота.
+        self.errors: list[str] = []
 
     @property
     def usable(self) -> bool:
@@ -90,7 +92,11 @@ class Bot:
     def _handle_callback(
         self, update: Mapping[str, Any], callback: Mapping[str, Any]
     ) -> HandledMessage | None:
-        """Нажатие кнопки: её данные — это команда, а не текст."""
+        """Нажатие кнопки — это реплика, заранее написанная за пользователя.
+
+        Две формы: `add <id>` добавляет сериал по кнопке, всё остальное — обычная
+        фраза, которая идёт через тот же разбор, что и набранный текст.
+        """
         data = callback.get("data")
         message = callback.get("message") or {}
         chat = message.get("chat") if isinstance(message, Mapping) else None
@@ -98,10 +104,12 @@ class Bot:
         if chat_id is None:
             return None
         self._remember_chat(chat_id)
-        if not isinstance(data, str) or not data:
+        if not isinstance(data, str) or not data.strip():
             reply = Reply(text="Кнопка без команды, напишите текстом.")
-        else:
+        elif data.startswith(("add ", "reject ")):
             reply = self._watcher.add_by_callback(data)
+        else:
+            reply = self.answer(data)
         self._api.send_message(chat_id, reply.text, buttons=reply.buttons)
         return HandledMessage(
             update_id=int(update.get("update_id") or 0),
@@ -118,19 +126,38 @@ class Bot:
         self._watcher.db.set_setting(CHAT_ID_SETTING, str(chat_id))
 
     def poll_once(self, *, timeout: int = 25) -> list[HandledMessage]:
+        """Один заход опроса. Недоставленное сообщение — запись в `errors`, не падение."""
         updates = self._api.get_updates(offset=self._offset, timeout=timeout)
         handled: list[HandledMessage] = []
         for update in updates:
             self._offset = int(update.get("update_id") or 0) + 1
-            message = self.handle_update(update)
+            try:
+                message = self.handle_update(update)
+            except NotifyError as exc:
+                self.errors.append(str(exc))
+                continue
             if message is not None:
                 handled.append(message)
         return handled
 
-    def run(self, *, once: bool = False, poll_timeout: int = 25) -> None:
+    def take_errors(self) -> list[str]:
+        """Забрать и очистить накопленные ошибки — вызывающий код их напечатает."""
+        errors, self.errors = self.errors, []
+        return errors
+
+    def run(
+        self,
+        *,
+        once: bool = False,
+        poll_timeout: int = 25,
+        on_error: Callable[[str], None] | None = None,
+    ) -> None:
         """Цикл опроса. `once` — один заход, удобно для cron и проверок."""
         while True:
             handled = self.poll_once(timeout=poll_timeout)
+            if on_error is not None:
+                for message in self.take_errors():
+                    on_error(message)
             if once:
                 return
             if not handled:

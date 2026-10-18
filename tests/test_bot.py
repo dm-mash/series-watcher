@@ -19,6 +19,7 @@ from series_watcher.tvmaze import TvMazeClient
 from conftest import FakeTelegram, load_fixture
 
 from test_check import NOW
+from test_recommend import person_credits
 from test_nlu import intent_json
 from test_llm import FakeLLM
 
@@ -155,13 +156,14 @@ def test_add_show_offers_candidates_as_buttons(parts, fake_tvmaze):
     assert api.sent[0]["buttons"] == (("1. Dark", "add 11"), ("2. Dark Matter", "add 12"))
 
 
-def test_where_to_watch_without_sources_is_honest(parts):
+def test_where_to_watch_without_links_says_what_to_do(parts):
     watcher, _, _ = parts
     bot, api = make_bot(watcher, [text_update("где смотреть Beyond the Gates")])
 
     bot.poll_once()
 
-    assert "источники молчат" in api.sent[0]["text"]
+    assert "где смотреть: не настроено" in api.sent[0]["text"]
+    assert "where --add 75194" in api.sent[0]["text"]
 
 
 def test_unknown_reply_offers_buttons(parts):
@@ -290,3 +292,236 @@ def test_callback_chat_is_remembered_too(parts, fake_tvmaze):
     bot.poll_once()
 
     assert db.get_setting("telegram_chat_id") == "77"
+
+
+def button(text: str, *, chat_id: int = 1, update_id: int = 9) -> dict:
+    """Нажатие кнопки, у которой callback_data равен её подписи."""
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": "1",
+            "data": text,
+            "message": {"chat": {"id": chat_id}, "text": "кнопки"},
+        },
+    }
+
+
+def test_suggestion_button_acts_like_a_phrase(parts, frozen_now):
+    """Кнопка «Что нового» — это та же реплика, просто набранная за пользователя."""
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [button("Что нового")])
+
+    bot.poll_once()
+
+    assert "S2026E193" in api.sent[0]["text"]
+
+
+def test_digest_button_shows_the_schedule(parts):
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [button("Сводка")])
+
+    bot.poll_once()
+
+    assert "Ближайшие 7 дней" in api.sent[0]["text"]
+
+
+def test_where_button_lists_offers(parts):
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [button("Где смотреть")])
+
+    bot.poll_once()
+
+    assert "Beyond the Gates" in api.sent[0]["text"]
+
+
+def test_recommend_button_is_answered(parts, fake_tvmaze):
+    from series_watcher.recommend import _upcoming
+
+    watcher, fake, _ = parts
+    fake.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    for day in _upcoming(3):
+        fake.add(f"/schedule?date={day}", load_fixture("schedule"))
+    bot, api = make_bot(watcher, [button("Порекомендуй")])
+
+    bot.poll_once()
+
+    assert "Похожее на ваш список" in api.sent[0]["text"]
+
+
+def test_add_button_still_adds_by_id(parts, fake_tvmaze):
+    watcher, fake, db = parts
+    fake.add("/shows/44933", load_fixture("show"))
+    fake.add("/shows/44933/episodes", load_fixture("episodes"))
+    bot, api = make_bot(watcher, [button("add 44933")])
+
+    bot.poll_once()
+
+    assert "Добавлен: Severance" in api.sent[0]["text"]
+
+
+class FailingApi:
+    """Bot API, который падает на отправке — бот обязан выжить."""
+
+    token = "test-token"
+
+    def __init__(self, messages: int = 1) -> None:
+        self.sent = 0
+        self.offset = None
+        self.messages = messages
+
+    def get_updates(self, *, offset=None, timeout=25):
+        self.offset = offset
+        if self.sent >= self.messages:
+            return []
+        return [text_update("дайджест", update_id=self.sent + 1)]
+
+    def send_message(self, chat_id, text, *, buttons=()):
+        from series_watcher.notify import NotifyError
+
+        self.sent += 1
+        raise NotifyError("Telegram не ответил: соединение оборвалось")
+
+
+def test_failed_message_does_not_kill_the_bot(parts):
+    watcher, _, _ = parts
+    api = FailingApi()
+    bot = Bot(watcher.config, watcher, api)
+    reported: list[str] = []
+
+    bot.run(once=True, on_error=reported.append)
+
+    assert reported == ["Telegram не ответил: соединение оборвалось"]
+    assert bot.errors == []  # ошибка забрана и показана, а не копится
+
+
+def test_errors_are_collected_per_message(parts):
+    watcher, _, _ = parts
+    api = FailingApi(messages=2)
+    bot = Bot(watcher.config, watcher, api)
+
+    bot.poll_once()
+    bot.poll_once()
+
+    assert len(bot.errors) == 2
+
+    taken = bot.take_errors()
+
+    assert len(taken) == 2
+    assert bot.errors == []  # забрали — не копится
+
+
+def test_list_button_and_phrase_show_tracked_shows(parts, frozen_now):
+    """«Список» и «что нового» — разные ответы, а не один и тот же дайджест."""
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [text_update("а просто список отслеживаемых покажи")])
+
+    bot.poll_once()
+
+    text = api.sent[0]["text"]
+    assert "Отслеживаю 1" in text
+    assert "Ближайшие 7 дней" not in text
+    assert "S2026E193" in text
+
+
+def test_digest_still_gives_the_week(parts, frozen_now):
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [text_update("сводка")])
+
+    bot.poll_once()
+
+    assert "Ближайшие 7 дней" in api.sent[0]["text"]
+
+
+def test_named_show_makes_it_about_that_show(parts, fake_tvmaze, frozen_now):
+    from series_watcher.recommend import _upcoming
+
+    watcher, fake, _ = parts
+    fake.add("/shows/45039", dict(load_fixture("show"), id=45039, name="Slow Horses"))
+    fake.add("/shows/45039/episodes", load_fixture("episodes"))
+    watcher.add_show_by_id(45039)
+    fake.add("/shows/45039/crew", [{"type": "Director", "person": {"id": 7, "name": "Someone"}}])
+    fake.add("/people/7/crewcredits", [{"type": "Director", "_links": {"show": {"href": "https://api.tvmaze.com/shows/32", "name": "Fargo"}}}])
+    for day in _upcoming(3):
+        fake.add(f"/schedule?date={day}", [])
+    fake.add("/shows/32", dict(load_fixture("show"), id=32, name="Fargo", rating={"average": 8.6}))
+    watcher.llm = None
+
+    bot, api = make_bot(watcher, [text_update("порекомендуй похожее на slow horses")])
+    bot.poll_once()
+
+    assert "Похожее на «Slow Horses»" in api.sent[0]["text"]
+    assert "Fargo" in api.sent[0]["text"]
+
+
+def test_recommendation_has_a_reject_button(parts, fake_tvmaze, frozen_now):
+    from series_watcher.recommend import _upcoming
+
+    watcher, fake, _ = parts
+    fake.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    for day in _upcoming(3):
+        fake.add(f"/schedule?date={day}", load_fixture("schedule"))
+
+    bot, api = make_bot(watcher, [text_update("посоветуй что-нибудь")])
+    bot.poll_once()
+
+    callbacks = [data for _, data in api.sent[0]["buttons"]]
+    assert callbacks and all(data.startswith("reject ") for data in callbacks)
+
+
+def test_reject_button_removes_the_candidate(parts):
+    watcher, _, db = parts
+    bot, api = make_bot(watcher, [button("reject 44933")])
+
+    bot.poll_once()
+
+    assert "больше не предлагаю" in api.sent[0]["text"]
+    assert 44933 in db.rejected_ids()
+
+
+def test_about_answers_with_a_card(parts, fake_tvmaze):
+    watcher, fake, _ = parts
+    watcher.add_show_by_id(44933)
+    bot, api = make_bot(watcher, [text_update("что за сериал Severance")])
+
+    bot.poll_once()
+
+    text = api.sent[0]["text"]
+    assert "Severance" in text
+    assert "Рейтинг TVmaze" in text
+    assert "tvmaze.com/shows/44933" in text
+    assert "Данные: TVmaze" in text
+
+
+def test_about_unknown_show(parts):
+    watcher, fake, _ = parts
+    fake.add("/search/shows?q=zzzqqq", [])
+    bot, api = make_bot(watcher, [text_update("что за сериал zzzqqq")])
+
+    bot.poll_once()
+
+    assert "не нашёл ни в списке, ни в каталоге" in api.sent[0]["text"]
+    assert "Данные: TVmaze" not in api.sent[0]["text"]
+
+
+def test_about_offers_to_add_untracked_show(parts, fake_tvmaze):
+    watcher, fake, _ = parts
+    fake.add("/search/shows?q=Silo", [{"score": 0.9, "show": dict(load_fixture("show"), id=38052, name="Silo")}])
+    fake.add("/shows/38052", dict(load_fixture("show"), id=38052, name="Silo"))
+    bot, api = make_bot(watcher, [text_update("расскажи про Silo")])
+
+    bot.poll_once()
+
+    assert "Ещё не отслеживается" in api.sent[0]["text"]
+    assert api.sent[0]["buttons"] == (("Добавить Silo", "add 38052"),)
+
+
+def test_about_without_name_asks(parts):
+    """Намерение поняли, а сериал не назвали — спрашиваем, а не молчим."""
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [text_update("расскажи о")])
+
+    bot.poll_once()
+
+    assert "О каком сериале рассказать" in api.sent[0]["text"]

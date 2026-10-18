@@ -17,6 +17,9 @@ from .tvmaze import TvMazeError
 
 TVMAZE_CREDIT = "Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com"
 
+#: Запас поверх long polling: сетевые задержки не должны рвать соединение.
+LONGPOLL_MARGIN = 15.0
+
 
 class NotifyError(RuntimeError):
     """Telegram не принял сообщение."""
@@ -132,23 +135,29 @@ class TelegramApi:
         return self._call("sendMessage", payload)
 
     def get_updates(self, *, offset: int | None = None, timeout: int = 25) -> list[Mapping[str, Any]]:
+        """Долгий опрос: соединение держится `timeout` секунд, поэтому и HTTP-таймаут
+        должен быть длиннее, иначе клиент отвалится раньше ответа Telegram."""
         payload: dict[str, Any] = {"timeout": timeout}
         if offset is not None:
             payload["offset"] = offset
-        result = self._call("getUpdates", payload)
+        result = self._call("getUpdates", payload, http_timeout=timeout + LONGPOLL_MARGIN)
         return [item for item in (result or []) if isinstance(item, Mapping)]
 
     def close(self) -> None:
         self._client.close()
 
-    def _call(self, method: str, payload: Mapping[str, Any]) -> Any:
+    def _call(
+        self, method: str, payload: Mapping[str, Any], *, http_timeout: float | None = None
+    ) -> Any:
         import httpx
 
         if not self._token:
             raise NotifyError("нет TELEGRAM_BOT_TOKEN")
         url = f"https://api.telegram.org/bot{self._token}/{method}"
         try:
-            response = self._client.post(url, json=dict(payload))
+            response = self._client.post(
+                url, json=dict(payload), **({"timeout": http_timeout} if http_timeout else {})
+            )
         except httpx.HTTPError as exc:
             raise NotifyError(f"Telegram не ответил: {exc}") from exc
         if response.status_code >= 400:

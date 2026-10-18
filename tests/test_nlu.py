@@ -10,6 +10,7 @@ from series_watcher.nlu import (
     ADD_SHOW,
     CONFIDENCE_FLOOR,
     DIGEST,
+    LIST,
     MARK_WATCHED,
     RECOMMEND,
     UNKNOWN,
@@ -140,3 +141,29 @@ def test_confidence_floor_is_respected():
     assert rules("что нового").confident is True
     assert rules("привет").confident is False
     assert CONFIDENCE_FLOOR == 0.6
+
+def test_start_command_is_understood():
+    assert rules("/start").name == WHAT_NEW
+    assert parse("старт").name == WHAT_NEW
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    ["список", "а просто список отслеживаемых покажи", "что я отслеживаю", "какие сериалы"],
+)
+def test_list_request_is_not_digest(phrase):
+    """«Покажи список» — это list, а не ближайший по смыслу digest."""
+    assert rules(phrase).name == LIST
+
+
+def test_digest_is_still_digest():
+    assert rules("сводка").name == DIGEST
+    assert rules("дайджест на неделю").name == DIGEST
+
+
+def test_prompt_tells_the_model_when_to_say_unknown():
+    from series_watcher.nlu import SYSTEM_PROMPT
+
+    assert "list" in SYSTEM_PROMPT
+    assert "unknown" in SYSTEM_PROMPT
+    assert "подставлять соседнее намерение хуже" in SYSTEM_PROMPT

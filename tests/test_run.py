@@ -59,7 +59,7 @@ def test_run_sends_one_message_per_episode(parts):
     assert report.sent == 3
     assert len(telegram.sent) == 3
     assert "S2026E193" in telegram.sent[0]["text"]
-    assert "где смотреть: источники молчат" in telegram.sent[0]["text"]
+    assert "где смотреть: не настроено" in telegram.sent[0]["text"]
     assert telegram.sent[0]["text"].count("tvmaze.com") == 2
 
 
@@ -169,3 +169,27 @@ def test_digest_says_when_nothing_is_planned(parts):
 
     assert "S2026E196" not in text
     assert "пусто" in text
+
+def test_missing_link_tells_what_to_do(parts):
+    watcher, _, _ = parts
+    watcher.sources = SourceSet([CustomSource("/нет/такого.json")])
+
+    lines = watcher.where_lines(watcher.db.list_shows()[0])
+
+    assert lines == [
+        "где смотреть: не настроено — series-watcher where --add 75194 --url <ссылка>"
+    ]
+
+
+def test_existing_link_is_used(parts, tmp_path):
+    import json
+
+    watcher, _, db = parts
+    show = db.list_shows()[0]
+    path = tmp_path / "where.json"
+    path.write_text(json.dumps({str(show.tvmaze_id): [{"url": "https://example.tv/x"}]}), encoding="utf-8")
+    watcher.sources = SourceSet([CustomSource(path)])
+
+    lines = watcher.where_lines(show)
+
+    assert lines == ["где смотреть: ссылка — https://example.tv/x"]

@@ -19,6 +19,8 @@ WHERE_TO_WATCH = "where_to_watch"
 MARK_WATCHED = "mark_watched"
 UNSUBSCRIBE = "unsubscribe"
 DIGEST = "digest"
+LIST = "list"
+ABOUT = "about"
 RECOMMEND = "recommend"
 UNKNOWN = "unknown"
 
@@ -29,6 +31,8 @@ INTENTS = (
     MARK_WATCHED,
     UNSUBSCRIBE,
     DIGEST,
+    LIST,
+    ABOUT,
     RECOMMEND,
     UNKNOWN,
 )
@@ -53,30 +57,54 @@ SYSTEM_PROMPT = (
     "Ты разбираешь сообщение пользователя сервиса отслеживания сериалов на русском.\n"
     "Намерения: what_new (что нового вышло), add_show (добавить сериал), "
     "where_to_watch (где смотреть), mark_watched (отметить просмотренным), "
-    "unsubscribe (перестать отслеживать), digest (сводка по расписанию), "
-    "recommend (порекомендовать сериал), unknown (не понял).\n"
+    "unsubscribe (перестать отслеживать), digest (сводка по расписанию на "
+    "несколько дней), list (показать список отслеживаемых сериалов и когда "
+    "выходит следующий эпизод), recommend (порекомендовать сериал), "
+    "unknown (не понял).\n"
     "Возвращай только JSON по схеме. Не выдумывай сериалов: если название не названо, "
-    "верни пустую строку. confidence — насколько уверен в разборе."
+    "верни пустую строку. confidence — насколько уверен в разборе.\n"
+    "digest — это именно расписание на несколько дней вперёд, а «покажи список» и "
+    "«что я отслеживаю» — это list. Если запрос ни под одно намерение не подходит, "
+    "верни unknown, а не то, что похоже: подставлять соседнее намерение хуже, чем "
+    "сказать, что не понял."
 )
 
 _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     (DIGEST, re.compile(r"(дайджест|сводк|расписан\w* на|что выходит|что дальше|анонс)", re.I)),
+    (
+        LIST,
+        re.compile(
+            r"(список|мои сериалы|что я отслежива|что отслежива|какие сериалы|"
+            r"что слежу|чего смотрю|покажи что)",
+            re.I,
+        ),
+    ),
     (WHAT_NEW, re.compile(r"(что нового|новые серии|что вышл|вышел ли|новости)", re.I)),
     (RECOMMEND, re.compile(r"(посоветуй|порекоменд|что посмотреть|похожие на)", re.I)),
     (WHERE_TO_WATCH, re.compile(r"(где смотреть|где\s+его\s+стрим|где стримят|где смотр|где найти|можно посмотреть)", re.I)),
     (UNSUBSCRIBE, re.compile(r"(перестань|удали|убери|отпишись|отслеживать не надо|больше не следи)", re.I)),
     (MARK_WATCHED, re.compile(r"(посмотрел|просмотрел|отметь|уже видел|посмотрела)", re.I)),
+    (
+        ABOUT,
+        re.compile(
+            r"(что за сериал|что за шоу|что такое|расскажи (?:о|про|об)|"
+            r"о чём|о чем\b|за что сериал|про что сериал)",
+            re.I,
+        ),
+    ),
     (ADD_SHOW, re.compile(r"(добавь|отслеживай|подпишись на|хочу смотреть|следи за)", re.I)),
 )
 
 _SHOW_AFTER = re.compile(
-    r"(?:добавь|отслеживай|следи за|подпишись на|хочу смотреть|похожие на|где смотреть"
-    r"|перестань следить за|удали сериал|убери сериал)\s+"
+    r"(?:добавь|отслеживай|следи за|подпишись на|хочу смотреть|похожие на|похожее на"
+    r"|где смотреть|перестань следить за|удали сериал|убери сериал"
+    r"|что за сериал|что за шоу|что такое|расскажи (?:о|про|об)|о чём|о чем)\s+"
     r"(?:сериал\s+)?(.{2,60})",
     re.I,
 )
 # «2 сезон 5 серию» и «сезон 2, серия 5» — номера стоят с обеих сторон от слова.
 # Номера сезона бывают и двухзначные, и «номер года» — у ежедневных сериалов.
+_SIMILAR_RE = re.compile(r"похож", re.I)
 _SEASON = re.compile(r"(?:сезон|season)\s*(\d{1,4})|(\d{1,4})\s*(?:сезон|season)", re.I)
 _NUMBER = re.compile(
     r"(?:серия|серию|сериал|эпизод|episode)\s*(\d{1,3})|(\d{1,3})\s*(?:серия|серию|эпизод)",
@@ -148,6 +176,9 @@ def rules(text: str) -> Intent:
     phrase = (text or "").strip()
     if not phrase:
         return Intent(reason="пустая реплика")
+    if phrase in {"/start", "start", "старт", "начать"}:
+        # Первое касание бота: показать, что уже вышло, и куда смотреть дальше.
+        return Intent(name=WHAT_NEW, confidence=0.9, reason="rules")
 
     for name, pattern in _RULES:
         if pattern.search(phrase):
@@ -163,9 +194,15 @@ def rules(text: str) -> Intent:
 
 
 def _show_after(phrase: str, name: str) -> str | None:
-    if name in (DIGEST, WHAT_NEW, RECOMMEND) and name != ADD_SHOW:
-        if not _SHOW_AFTER.search(phrase) or "похожие на" not in phrase.lower():
-            return None
+    """Название сериала, если оно есть в реплике.
+
+    У намерений без названия («дайджест», «что нового») пусто, а у рекомендации
+    берём только после «похожие на»: «посоветуй что-нибудь» — это про весь список.
+    """
+    if name == RECOMMEND and not _SIMILAR_RE.search(phrase):
+        return None
+    if name in (DIGEST, WHAT_NEW):
+        return None
     match = _SHOW_AFTER.search(phrase)
     if not match:
         return None

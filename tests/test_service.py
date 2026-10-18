@@ -8,10 +8,13 @@ import pytest
 
 from series_watcher.config import Config
 from series_watcher.db import Database
+from series_watcher.llm import LLMClient
+from series_watcher.nlu import Intent
 from series_watcher.service import SeriesWatcher
 from series_watcher.tvmaze import TvMazeClient
 
 from conftest import load_fixture
+from test_llm import FakeLLM, reply
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
 
@@ -156,3 +159,100 @@ def test_candidate_label_carries_kind_status_and_network(watcher, fake_tvmaze):
     assert result.status == "needs_choice"
     assert result.candidates[0].label == "Beyond the Gates (Scripted, Running, CBS)"
     assert result.candidates[1].label == "Gates of Hell (Scripted, Running, Apple TV)"
+
+def llm_for(fake: FakeLLM) -> LLMClient:
+    config = Config.from_env(
+        env_file=None, environ={"LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "model-1"}
+    )
+    return LLMClient(config, transport=fake.transport())
+
+
+def test_description_is_resolved_into_a_show(watcher, fake_tvmaze):
+    """Пользователь описал сериал словами: поиск по подстроке не помогает."""
+    fake_tvmaze.add("/search/shows?q=where people get their memories cut", [])
+    watcher.llm = llm_for(
+        FakeLLM(reply('{"title": "Severance"}'), reply('{"id": 44933, "confidence": 0.95}'))
+    )
+
+    result = watcher.add_show("where people get their memories cut")
+
+    assert result.status == "added"
+    assert result.show.name == "Severance"
+    assert "нашёл по описанию" in result.message
+
+
+def test_ambiguous_candidates_are_resolved_by_the_model(watcher, fake_tvmaze):
+    fake_tvmaze.add(
+        "/search/shows?q=dark knight",
+        [
+            {"score": 0.8, "show": show_payload(11, "Dark")},
+            {"score": 0.5, "show": show_payload(12, "Dark Matter")},
+        ],
+    )
+    fake_tvmaze.add("/shows/12", show_payload(12, "Dark Matter"))
+    fake_tvmaze.add("/shows/12/episodes", load_fixture("episodes"))
+    watcher.llm = llm_for(FakeLLM(reply('{"id": 12, "confidence": 0.9}')))
+
+    result = watcher.add_show("dark knight")
+
+    assert result.status == "added"
+    assert result.show.name == "Dark Matter"
+
+
+def test_unsure_model_leaves_the_choice_to_the_user(watcher, fake_tvmaze):
+    fake_tvmaze.add(
+        "/search/shows?q=dark knight",
+        [
+            {"score": 0.8, "show": show_payload(11, "Dark")},
+            {"score": 0.5, "show": show_payload(12, "Dark Matter")},
+        ],
+    )
+    watcher.llm = llm_for(FakeLLM(reply('{"id": null, "confidence": 0.9}')))
+
+    result = watcher.add_show("dark knight")
+
+    assert result.status == "needs_choice"
+    assert len(result.candidates) == 2
+
+
+def test_episode_brief_is_written_once_and_remembered(watcher):
+    watcher.add_show_by_id(44933)
+    episode = next(item for item in watcher.db.list_episodes(watcher.db.list_shows()[0].id) if item.summary)
+    fake = FakeLLM(reply("Байерс снова вскрывает дело."), reply("Второй вызов"))
+    watcher.llm = llm_for(fake)
+
+    first = watcher.episode_brief(episode)
+    second = watcher.episode_brief(episode)
+
+    assert first == "Байерс снова вскрывает дело."
+    assert second == first
+    assert len(fake.requests) == 1
+
+
+def test_without_model_brief_is_just_absent(watcher):
+    watcher.add_show_by_id(44933)
+    episode = next(item for item in watcher.db.list_episodes(watcher.db.list_shows()[0].id) if item.summary)
+
+    assert watcher.episode_brief(episode) is None
+
+
+def test_service_replies_carry_no_attribution(watcher):
+    """Подпись TVmaze — только там, где в ответе есть данные TVmaze."""
+    watcher.add_show_by_id(44933)
+    from series_watcher.nlu import UNKNOWN, WHAT_NEW, WHERE_TO_WATCH
+
+    empty_news = watcher.handle(Intent(WHAT_NEW)).text
+    unknown = watcher.handle(Intent(UNKNOWN)).text
+    empty_where = watcher.handle(Intent(WHERE_TO_WATCH)).text
+
+    assert "Данные: TVmaze" not in empty_news
+    assert "Данные: TVmaze" not in unknown
+    assert "Данные: TVmaze" not in empty_where
+
+
+def test_data_replies_keep_attribution(watcher):
+    watcher.add_show_by_id(75194)  # идёт в эфире, в ответе есть названия и время
+    digest = watcher.digest(days=7, now=NOW)
+
+    assert "Данные: TVmaze" in digest
+    assert "Beyond the Gates" in digest

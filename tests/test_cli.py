@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import io
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from series_watcher.cli import EXIT_ERROR, EXIT_NEEDS_CHOICE, EXIT_OK, main
+from series_watcher.config import Config
 from series_watcher.tvmaze import TvMazeClient
 
 from conftest import load_fixture
@@ -16,6 +18,7 @@ from conftest import load_fixture
 @pytest.fixture
 def cli(monkeypatch, tmp_path, fake_tvmaze, sleeps):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CUSTOM_SOURCES_PATH", str(tmp_path / "where_to_watch.json"))
 
     def factory(**kwargs) -> TvMazeClient:
         kwargs["transport"] = fake_tvmaze.transport()
@@ -119,8 +122,7 @@ def test_list_says_what_is_disabled(cli):
     cli("add", "Severance")
     _, out, _ = cli("list")
     assert "Что отключено:" in out
-    assert "нет TMDB_API_KEY" in out
-    assert "нет JUSTWATCH_API_KEY" in out
+    assert "нет TELEGRAM_BOT_TOKEN" in out
 
 
 def test_broken_timezone_fails_before_network(cli, fake_tvmaze):
@@ -260,7 +262,7 @@ def test_recommend_lists_candidates_with_reasons(cli, fake_tvmaze):
         fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
     cli("add", "--id", "44933")
 
-    code, out, _ = cli("recommend", "--limit", "3", "--no-tmdb")
+    code, out, _ = cli("recommend", "--limit", "3")
 
     assert code == EXIT_OK
     assert "Похожее на ваш список" in out
@@ -312,3 +314,24 @@ def test_digest_can_include_recommendations(cli, fake_tvmaze):
 
     assert code == EXIT_OK
     assert "Что бы посмотреть" in out
+
+
+def test_where_adds_a_link(cli, tmp_path):
+    import json
+
+    CUSTOM_SOURCES = Config.from_env().custom_sources_path
+
+    cli("add", "--id", "44933")
+    cli("--tz", "Europe/Moscow", "where", "--add", "44933",
+        "--url", "https://example.tv/s", "--provider", "Кинопоиск")
+
+    code, out, _ = cli("where")
+    assert code == EXIT_OK
+    assert "Кинопоиск — https://example.tv/s" in out
+    assert json.loads(Path(CUSTOM_SOURCES).read_text(encoding="utf-8"))["44933"][0]["provider"] == "Кинопоиск"
+
+
+def test_where_without_url_is_an_error(cli):
+    code, _, err = cli("where", "--add", "44933")
+    assert code == EXIT_ERROR
+    assert "--url" in err

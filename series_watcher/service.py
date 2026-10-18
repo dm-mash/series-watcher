@@ -11,12 +11,24 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Sequence
 
+from .catalog import explain, one_liner, pick_show, short_summary, title_from_description
 from .config import Config
-from .db import TELEGRAM_CHANNEL, Database, Episode, Show, TrackedShow, tracked_shows, utcnow
+from .db import (
+    NOT_INTERESTED,
+    TELEGRAM_CHANNEL,
+    Database,
+    Episode,
+    Show,
+    TrackedShow,
+    tracked_shows,
+    utcnow,
+)
 from .recommend import Recommendation, Recommender
 from .nlu import (
+    ABOUT,
     ADD_SHOW,
     DIGEST,
+    LIST,
     MARK_WATCHED,
     RECOMMEND,
     UNSUBSCRIBE,
@@ -116,7 +128,7 @@ class SeriesWatcher:
     tvmaze: TvMazeClient
     notifier: Notifier | None = None
     sources: SourceSet | None = None
-    tmdb: object | None = None
+    llm: object | None = None  # LLMClient | None; тип не импортируем, чтобы не было цикла
 
     def add_show(self, query: str, *, pick: int | None = None, limit: int = 7) -> AddResult:
         """Найти сериал в TVmaze и завести его в списке.
@@ -132,7 +144,7 @@ class SeriesWatcher:
         found = self.tvmaze.search_shows(query)
         candidates = tuple(Candidate(show=item.show, score=item.score) for item in found[:limit])
         if not candidates:
-            return AddResult(status="not_found", message=f"По запросу «{query}» ничего нет")
+            return self._add_by_description(query, needle, limit)
 
         exact = next((item for item in candidates if item.show.normalized_name == needle), None)
         chosen: TvMazeShow | None
@@ -149,6 +161,11 @@ class SeriesWatcher:
         elif len(candidates) == 1:
             chosen = candidates[0].show
         else:
+            guessed = pick_show(
+                query, [item.show for item in candidates], llm=self.llm  # type: ignore[arg-type]
+            )
+            if guessed is not None:
+                return self._store(guessed)
             return AddResult(
                 status="needs_choice",
                 candidates=candidates,
@@ -156,6 +173,40 @@ class SeriesWatcher:
             )
 
         return self._store(chosen)
+
+    def _add_by_description(self, query: str, needle: str, limit: int) -> AddResult:
+        """Поиск провалился: пробуем понять описание и искать уже по названию."""
+        if needle not in query.casefold():
+            return AddResult(status="not_found", message=f"По запросу «{query}» ничего нет")
+        title = title_from_description(query, llm=self.llm)  # type: ignore[arg-type]
+        if not title:
+            hint = ""
+            if not getattr(self.llm, "configured", False):
+                hint = " Похоже на описание: без модели (LLM_BASE_URL, LLM_MODEL) назвать сериал не по чему."
+            return AddResult(
+                status="not_found", message=f"По запросу «{query}» ничего нет.{hint}"
+            )
+        found = self.tvmaze.search_shows(title)
+        if not found:
+            return AddResult(
+                status="not_found", message=f"По описанию «{query}» нашёл «{title}», но в каталоге его нет"
+            )
+        candidates = tuple(Candidate(show=item.show, score=item.score) for item in found[:limit])
+        chosen = pick_show(
+            title, [item.show for item in candidates], llm=self.llm  # type: ignore[arg-type]
+        )
+        if chosen is None:
+            chosen = candidates[0].show
+        result = self._store(chosen)
+        if result.status == "added":
+            result = AddResult(
+                status=result.status,
+                show=result.show,
+                candidates=result.candidates,
+                episodes=result.episodes,
+                message=f"нашёл по описанию: {chosen.name}. {result.message}",
+            )
+        return result
 
     def add_show_by_id(self, tvmaze_id: int) -> AddResult:
         return self._store(self.tvmaze.get_show(tvmaze_id))
@@ -289,8 +340,11 @@ class SeriesWatcher:
             if not items:
                 lines.append("  подходящего не нашлось")
             for item in items:
-                lines.append(f"  {item.line()} — {item.show.url or ''}".rstrip(" —"))
-                lines.append("    " + "; ".join(item.reasons))
+                lines.append(f"  • {item.line()} — {item.show.url or ''}".rstrip(" —"))
+                blurb = one_liner(item.show.name, item.summary, llm=self.llm)  # type: ignore[arg-type]
+                if blurb:
+                    lines.append("    " + blurb)
+                lines.append("    " + self._why(item))
         return footer(lines)
 
     def where_to_watch(self, show: Show, *, limit: int = 3) -> SourceAnswer:
@@ -299,11 +353,14 @@ class SeriesWatcher:
         answer = self.sources.where_to_watch(show, limit=limit)
         if answer.offers:
             return answer
-        return SourceAnswer(
-            offers=(),
-            source=None,
-            unavailable=answer.unavailable + ("tvmaze",),
-        )
+        return SourceAnswer(offers=(), source=None, unavailable=answer.unavailable)
+
+    def where_lines(self, show: Show, *, limit: int = 3) -> list[str]:
+        """Ответ на «где смотреть» с готовым советом, если ссылки ещё нет."""
+        answer = self.where_to_watch(show, limit=limit)
+        if answer.offers:
+            return answer.lines(limit)
+        return answer.lines(limit, hint=add_link_hint(show.tvmaze_id))
 
     def episode_message(self, item: DueEpisode) -> str:
         episode = item.episode
@@ -312,17 +369,33 @@ class SeriesWatcher:
             + (f" «{episode.name}»" if episode.name else ""),
             f"Вышел {_when(episode.airstamp, self.config)} ({self.config.tz_name})",
         ]
+        brief = self.episode_brief(item.episode)
+        if brief:
+            lines.append(brief)
         if item.show.url:
             lines.append(item.show.url)
-        answer = self.where_to_watch(item.show)
-        lines.extend(answer.lines())
+        lines.extend(self.where_lines(item.show))
         return footer(lines)
+
+    def episode_brief(self, episode: Episode) -> str | None:
+        """Короткое описание эпизока на русском. Считается один раз и лежит в базе."""
+        # Смотрим в базу, а не в переданный объект: копия эпизода могла устареть
+        # ещё до того, как текст сжали.
+        stored = self.db.get_summary_ru(episode.id)
+        if stored:
+            return stored
+        text = short_summary(episode.summary, llm=self.llm)  # type: ignore[arg-type]
+        if text:
+            self.db.set_summary_ru(episode.id, text)
+        return text
 
     def handle(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         """Исполнить разобранное намерение и вернуть ответ."""
         handlers = {
             WHAT_NEW: self._answer_what_new,
             DIGEST: self._answer_digest,
+            LIST: self._answer_list,
+            ABOUT: self._answer_about,
             WHERE_TO_WATCH: self._answer_where_to_watch,
             ADD_SHOW: self._answer_add_show,
             UNSUBSCRIBE: self._answer_unsubscribe,
@@ -332,7 +405,7 @@ class SeriesWatcher:
         handler = handlers.get(intent.name)
         if handler is None:
             return Reply(
-                text=footer(["Не понял, что нужно. Напишите проще, например «что нового»."]),
+                text=plain(["Не понял, что нужно. Напишите проще, например «что нового»."]),
                 buttons=buttons_for(intent),
             )
         return handler(intent, now=now)
@@ -340,7 +413,7 @@ class SeriesWatcher:
     def _answer_what_new(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         report = self.poll(now=now)
         if not report.due:
-            return Reply(text=footer(["Пока ничего нового не вышло."]))
+            return Reply(text=plain(["Пока ничего нового не вышло."]))
         lines = ["Что вышло:"]
         for item in report.due:
             title = f" «{item.episode.name}»" if item.episode.name else ""
@@ -348,12 +421,28 @@ class SeriesWatcher:
                 f"{item.show.name} — {item.episode.code}{title} — "
                 f"{_when(item.episode.airstamp, self.config)}"
             )
-        if len(report.due) == 1 and self.sources is not None:
-            lines.extend(self.where_to_watch(report.due[0].show).lines())
+        if len(report.due) == 1:
+            lines.extend(self.where_lines(report.due[0].show))
         return Reply(text=footer(lines))
 
     def _answer_digest(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         return Reply(text=self.digest(days=7, now=now))
+
+    def _answer_list(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        """Отслеживаемые сериалы и ближайший эфир по каждому."""
+        items = self.list_shows(now=now)
+        if not items:
+            return Reply(text=plain(["Список отслеживаемых пуст."]))
+        lines = [f"Отслеживаю {len(items)}:"]
+        for item in items:
+            if item.next_episode and item.next_episode.airstamp:
+                title = f" «{item.next_episode.name}»" if item.next_episode.name else ""
+                when = f"{item.next_episode.code}{title} — {_when(item.next_episode.airstamp, self.config)}"
+            else:
+                when = "следующий эпизод не запланирован"
+            lines.append(f"{item.show.name} — {when}")
+        lines.append("Сводка по дням: «дайджест».")
+        return Reply(text=footer(lines))
 
     def _answer_where_to_watch(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if intent.show:
@@ -364,21 +453,20 @@ class SeriesWatcher:
         else:
             shows = self.db.list_shows()
         if not shows:
-            return Reply(text=footer(["Список отслеживаемых пуст."]))
+            return Reply(text=plain(["Список отслеживаемых пуст."]))
 
+        # Название здесь — эхо запроса самого пользователя, а ссылки — из нашего
+        # файла: данных TVmaze в ответе нет, подпись не приписываем.
         lines: list[str] = []
         for show in shows:
             lines.append(show.name)
-            answer = self.where_to_watch(show)
-            if answer.offers:
-                lines.extend(f"  {offer.line()} — {offer.url}" for offer in answer.offers)
-            else:
-                lines.append("  " + (answer.lines() or ["где смотреть: источники молчат"])[0])
-        return Reply(text=footer(lines))
+            for line in self.where_lines(show):
+                lines.append("  " + line)
+        return Reply(text=plain(lines))
 
     def _answer_add_show(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if not intent.show:
-            return Reply(text=footer(["Какой сериал добавить?"]))
+            return Reply(text=plain(["Какой сериал добавить?"]))
         result = self.add_show(intent.show)
         if result.status == "not_found":
             return Reply(text=footer([f"По запросу «{intent.show}» ничего нет."]))
@@ -395,7 +483,7 @@ class SeriesWatcher:
 
     def _answer_unsubscribe(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if not intent.show:
-            return Reply(text=footer(["Какой сериал перестать отслеживать?"]))
+            return Reply(text=plain(["Какой сериал перестать отслеживать?"]))
         found = self.db.find_shows(intent.show)
         if not found:
             return Reply(text=footer([f"«{intent.show}» не отслеживается."]))
@@ -408,7 +496,7 @@ class SeriesWatcher:
     def _answer_mark_watched(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         shows = self.db.find_shows(intent.show) if intent.show else self.db.list_shows()
         if not shows:
-            return Reply(text=footer(["Нечего отмечать: список пуст."]))
+            return Reply(text=plain(["Нечего отмечать: список пуст."]))
         target = shows[0]
         episodes = self.db.list_episodes(target.id)
         candidates = _episodes_for(episodes, intent.season, intent.number)
@@ -422,17 +510,24 @@ class SeriesWatcher:
         names = ", ".join(f"{item.code}" for item in candidates)
         return Reply(text=footer([f"Отметил просмотренным: {target.name} — {names}"]))
 
-    def recommend(self, *, limit: int = 5, use_tmdb: bool = True, min_rating: float | None = None) -> list[Recommendation]:
+    def recommend(
+        self,
+        *,
+        limit: int = 5,
+        min_rating: float | None = None,
+        focus: Show | None = None,
+    ) -> list[Recommendation]:
+        """Подбор по всему списку или по названному сериалу."""
         if not self.db.list_shows():
             return []
-        options: dict[str, object] = {"limit": limit, "use_tmdb": use_tmdb}
+        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze)
+        options: dict[str, object] = {"limit": limit, "focus": focus}
         if min_rating is not None:
             options["min_rating"] = min_rating
-        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze, tmdb=self.tmdb)
         return recommender.candidates(**options)  # type: ignore[arg-type]
 
     def cold_start(self, *, limit: int = 3, schedule_days: int = 3) -> list[Recommendation]:
-        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze, tmdb=self.tmdb)
+        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze)
         return recommender.cold_start(limit=limit, schedule_days=schedule_days)
 
     def reject(self, tvmaze_id: int, kind: str) -> bool:
@@ -443,7 +538,7 @@ class SeriesWatcher:
         """Первый запуск: пустого списка не должно быть причиной молчать."""
         items = self.cold_start()
         if not items:
-            return Reply(text=footer(["В расписании ничего подходящего не нашлось. Добавьте сериал по названию."]))
+            return Reply(text=plain(["В расписании ничего подходящего не нашлось. Добавьте сериал по названию."]))
         lines = ["Список отслеживаемых пока пуст. Вот что идёт в эфире:"]
         buttons = []
         for item in items:
@@ -454,33 +549,109 @@ class SeriesWatcher:
         return Reply(text=footer(lines), buttons=tuple(buttons))
 
     def add_by_callback(self, payload: str) -> Reply:
-        """Кнопка «Добавить»: данные кнопки — это и есть команда."""
+        """Кнопки: `add <id>` добавляет, `reject <id>` — отказ от рекомендации."""
         parts = payload.split()
-        if len(parts) != 2 or parts[0] != "add" or not parts[1].isdigit():
-            return Reply(text=footer(["Кнопка устарела, напишите запрос текстом."]))
+        if len(parts) != 2 or not parts[1].isdigit() or parts[0] not in {"add", "reject"}:
+            return Reply(text=plain(["Кнопка устарела, напишите запрос текстом."]))
+        if parts[0] == "reject":
+            if not self.reject(int(parts[1]), NOT_INTERESTED):
+                return Reply(text=plain(["Этот сериал и так не предлагаю."]))
+            return Reply(text=plain(["Запомнил: больше не предлагаю."]))
         try:
             result = self.add_show_by_id(int(parts[1]))
         except TvMazeError as exc:
             return Reply(text=footer([f"Не получилось добавить: {exc}"]))
         if result.show is None:
-            return Reply(text=footer(["Не получилось добавить сериал."]))
+            return Reply(text=plain(["Не получилось добавить сериал."]))
         verb = "Уже отслеживается" if result.status == "exists" else "Добавлен"
         return Reply(text=footer([f"{verb}: {result.show.name}", result.show.url or ""]))
 
     def _answer_recommend(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if not self.db.list_shows():
             return self.cold_start_reply()
-        items = self.recommend()
+        focus = self._focus_show(intent.show)
+        items = self.recommend(focus=focus)
+        if focus is not None and not items:
+            return Reply(text=plain([f"Похожего на «{focus.name}» не нашлось."]))
         if not items:
-            note = ""
-            if self.tmdb is None or not getattr(self.tmdb, "available", lambda: False)():
-                note = "Без TMDB_API_KEY подбор идёт по создателям и жанрам."
-            return Reply(text=footer(["Подходящих сериалов не нашлось." + note]))
-        lines = ["Похожее на ваш список:"]
+            return Reply(text=plain(["Подходящих сериалов не нашлось."]))
+        title = f"Похожее на «{focus.name}»:" if focus is not None else "Похожее на ваш список:"
+        lines: list[str] = []
+        buttons = []
         for item in items:
-            lines.append(f"{item.line()} — {item.show.url or ''}".rstrip(" —"))
-            lines.append("  " + "; ".join(item.reasons))
-        return Reply(text=footer(lines))
+            lines.append(f"• {item.line()} — {item.show.url or ''}".rstrip(" —"))
+            blurb = one_liner(item.show.name, item.summary, llm=self.llm)  # type: ignore[arg-type]
+            if blurb:
+                lines.append("  " + blurb)
+            lines.append("  " + self._why(item))
+            buttons.append((f"Не интересно: {item.show.name}", f"reject {item.show.id}"))
+        return Reply(text=footer([title, ""] + lines), buttons=tuple(buttons))
+
+    def _answer_about(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        """«Что за сериал X»: карточка из каталога, а не из нашего списка."""
+        if not intent.show:
+            return Reply(text=plain(["О каком сериале рассказать?"]))
+        tracked = self.db.find_shows(intent.show)
+        tvmaze_id = tracked[0].tvmaze_id if tracked else self._search_id(intent.show)
+        if tvmaze_id is None:
+            return Reply(text=plain([f"«{intent.show}» не нашёл ни в списке, ни в каталоге."]))
+        payload = self.tvmaze.get_show(tvmaze_id)
+
+        lines = [f"{payload.name} ({', '.join(payload.genres) or payload.kind or 'сериал'})"]
+        if payload.status:
+            lines.append(
+                "Статус: " + payload.status + (f", канал {payload.network}" if payload.network else "")
+            )
+        if payload.rating is not None:
+            lines.append(f"Рейтинг TVmaze: {payload.rating}")
+        blurb = one_liner(payload.name, payload.summary, llm=self.llm)  # type: ignore[arg-type]
+        if blurb:
+            lines.append(blurb)
+
+        if tracked:
+            item = next((it for it in self.list_shows(now=now) if it.show.id == tracked[0].id), None)
+            if item and item.next_episode and item.next_episode.airstamp:
+                lines.append(f"Следующий эпизод: {_when(item.next_episode.airstamp, self.config)}")
+            lines.extend(self.where_lines(tracked[0]))
+        else:
+            lines.append("Ещё не отслеживается.")
+        if payload.url:
+            lines.append(payload.url)
+
+        buttons = () if tracked else ((f"Добавить {payload.name}", f"add {payload.id}"),)
+        return Reply(text=footer(lines), buttons=buttons)
+
+    def _search_id(self, query: str) -> int | None:
+        """Каталог TVmaze: точное совпадение по названию, иначе лучшее из выдачи."""
+        try:
+            found = self.tvmaze.search_shows(query)
+        except TvMazeError:
+            return None
+        if not found:
+            return None
+        needle = normalize_name(query)
+        exact = next((item for item in found if item.show.normalized_name == needle), None)
+        return (exact or found[0]).show.id
+
+    def _focus_show(self, name: str | None) -> Show | None:
+        """Сериал, названный в запросе: «похожие на Slow Horses»."""
+        if not name:
+            return None
+        found = self.db.find_shows(name)
+        return found[0] if found else None
+
+    def blurb(self, item: Recommendation) -> str | None:
+        """Кратко о самом сериале — показывают и бот, и CLI."""
+        return one_liner(item.show.name, item.summary, llm=self.llm)  # type: ignore[arg-type]
+
+    def why(self, item: Recommendation) -> str:
+        """Одна строка «почему» — её показывают и бот, и CLI."""
+        return self._why(item)
+
+    def _why(self, item: Recommendation) -> str:
+        """Одна строка «почему»: словами модели, а без неё — фактами из API."""
+        prose = explain(item.show.name, item.reasons, llm=self.llm)  # type: ignore[arg-type]
+        return prose or "; ".join(item.reasons)
 
     def _poll_show(self, show: Show) -> ShowPoll:
         try:
@@ -513,6 +684,16 @@ class SeriesWatcher:
         message = f"эпизодов в базе: {len(episodes)} (новых {added}, обновлено {updated})"
         status = "exists" if known else "added"
         return AddResult(status=status, show=stored, episodes=len(episodes), message=message)
+
+
+def plain(lines: Sequence[str]) -> str:
+    """Служебный ответ: данных TVmaze в нём нет, подпись не приписываем."""
+    return "\n".join(line for line in lines if line)
+
+
+def add_link_hint(tvmaze_id: int) -> str:
+    """Готовая команда вместо тупика: добавить ссылку на этот сериал."""
+    return f"series-watcher where --add {tvmaze_id} --url <ссылка>"
 
 
 def _when(value: datetime | None, config: Config) -> str:

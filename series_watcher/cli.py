@@ -14,10 +14,8 @@ from .db import NOT_INTERESTED, ALREADY_WATCHED, Database, Show, TrackedShow
 from .llm import LLMClient
 from .notify import Notifier, NotifyError, TelegramApi
 from .service import AddResult, SeriesWatcher
-from .tmdb import TmdbClient
 from .sources import SourceSet
 from .sources.custom import CustomSource
-from .sources.justwatch import JustWatchSource
 from .tvmaze import TvMazeClient, TvMazeError
 
 TVMAZE_CREDIT = "Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com"
@@ -62,15 +60,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--recommend", action="store_true", help="добавить подбор сериалов (для недельного дайджеста)"
     )
 
+    where = sub.add_parser("where", help="где смотреть: показать и добавить ссылки")
+    where.add_argument("--add", type=int, metavar="ID", help="id сериала TVmaze, для которого добавляем ссылку")
+    where.add_argument("--url", help="ссылка, куда смотреть")
+    where.add_argument("--provider", default="ссылка", help="название сервиса (по умолчанию «ссылка»)")
+    where.add_argument("--kind", help="тип: подписка, бесплатно, в аренду")
+
     seed = sub.add_parser("seed", help="показать, с чего начать, когда список пуст")
     seed.add_argument("--limit", type=int, default=3, help="сколько предложить (по умолчанию 3)")
 
     recommend = sub.add_parser("recommend", help="подобрать сериалы по вашему списку")
+    recommend.add_argument("query", nargs="?", help="подобрать похожее на этот сериал")
     recommend.add_argument("--limit", type=int, default=5, help="сколько показать (по умолчанию 5)")
-    recommend.add_argument("--min-rating", type=float, help="порог рейтинга TMDB/TVmaze")
-    recommend.add_argument(
-        "--no-tmdb", action="store_true", help="не ходить в TMDB даже если ключ есть"
-    )
+    recommend.add_argument("--min-rating", type=float, help="порог рейтинга (по умолчанию 6.5)")
     recommend.add_argument(
         "--reject", type=int, metavar="ID", help="отказаться от сериала с таким id TVmaze"
     )
@@ -119,18 +121,12 @@ def main(
         rate_limit=config.tvmaze_rate_limit,
     )
     notifier = Notifier(config, db, transport=transport)
-    sources = SourceSet(
-        [
-            CustomSource(config.custom_sources_path),
-            JustWatchSource(config.justwatch_api_key, country=config.justwatch_country),
-        ]
-    )
-    tmdb = TmdbClient(config.tmdb_api_key, cache=db, transport=transport)
+    sources = SourceSet([CustomSource(config.custom_sources_path)])
+    llm = LLMClient(config, transport=transport)
     watcher = SeriesWatcher(
-        config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources, tmdb=tmdb
+        config=config, db=db, tvmaze=tvmaze, notifier=notifier, sources=sources, llm=llm
     )
     telegram = TelegramApi(config, notifier.client, token=config.telegram_bot_token)
-    llm = LLMClient(config, transport=transport)
     bot = Bot(config, watcher, telegram, llm=llm)
     try:
         if args.command == "add":
@@ -149,6 +145,8 @@ def main(
             return _cmd_recommend(watcher, config, args, out, err)
         if args.command == "seed":
             return _cmd_seed(watcher, args, out)
+        if args.command == "where":
+            return _cmd_where(watcher, config, args, out, err)
     except TvMazeError as exc:
         print(f"TVmaze: {exc}", file=err)
         return EXIT_ERROR
@@ -159,7 +157,6 @@ def main(
         print(f"Ошибка: {exc}", file=err)
         return EXIT_ERROR
     finally:
-        tmdb.close()
         llm.close()
         telegram.close()
         notifier.close()
@@ -320,6 +317,33 @@ def _cmd_run(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, o
     return EXIT_OK
 
 
+def _cmd_where(
+    watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO
+) -> int:
+    if args.add is not None:
+        if not args.url:
+            print("Нужна ссылка: --url https://…", file=err)
+            return EXIT_ERROR
+        source = CustomSource(config.custom_sources_path)
+        saved = source.add(args.add, args.url, provider=args.provider, kind=args.kind)
+        print(f"Сохранено в {source.path}: {saved}", file=out)
+        return EXIT_OK
+
+    shows = watcher.db.list_shows()
+    if not shows:
+        print("Список отслеживаемых пуст.", file=out)
+        return EXIT_OK
+    print(f"Где смотреть ({len(shows)}):", file=out)
+    for show in shows:
+        print(file=out)
+        print(f"  {show.name}", file=out)
+        for line in watcher.where_lines(show):
+            print(f"    {line}", file=out)
+    print(file=out)
+    print(TVMAZE_CREDIT, file=out)
+    return EXIT_OK
+
+
 def _cmd_seed(watcher: SeriesWatcher, args: argparse.Namespace, out: TextIO) -> int:
     if watcher.db.list_shows():
         print("Список не пуст, добавлять нечего:", file=out)
@@ -370,26 +394,31 @@ def _cmd_recommend(watcher: SeriesWatcher, config: Config, args: argparse.Namesp
         print("Список пуст: добавьте сериал, иначе подбирать не от чего.", file=out)
         return EXIT_OK
 
-    items = watcher.recommend(
-        limit=args.limit, use_tmdb=not args.no_tmdb, min_rating=args.min_rating
-    )
+    focus = None
+    if args.query:
+        found = watcher.db.find_shows(args.query)
+        if not found:
+            print(f"«{args.query}» не отслеживается.", file=out)
+            return EXIT_ERROR
+        focus = found[0]
+
+    items = watcher.recommend(limit=args.limit, min_rating=args.min_rating, focus=focus)
+    header = f"Похожее на «{focus.name}»" if focus is not None else "Похожее на ваш список"
     if not items:
         print("Подходящих сериалов не нашлось.", file=out)
     else:
-        print(f"Похожее на ваш список ({len(items)}):", file=out)
+        print(f"{header} ({len(items)}):", file=out)
         print(file=out)
         for item in items:
-            print(f"  {item.line()}", file=out)
-            for reason in item.reasons:
-                print(f"    {reason}", file=out)
-            print(f"    {item.show.url}", file=out)
-            print(f"    отказаться: series-watcher recommend --reject {item.show.id}", file=out)
+            print(f"• {item.line()} — {item.show.url}", file=out)
+            blurb = watcher.blurb(item)
+            if blurb:
+                print(f"  {blurb}", file=out)
+            print(f"  {watcher.why(item)}", file=out)
+            print(f"  отказаться: series-watcher recommend --reject {item.show.id}", file=out)
             print(file=out)
 
     print(TVMAZE_CREDIT, file=out)
-    for note in config.degradation_notes():
-        if "TMDB" in note:
-            print(note, file=out)
     return EXIT_OK
 
 
@@ -401,10 +430,13 @@ def _cmd_bot(bot: Bot, args: argparse.Namespace, out: TextIO, err: TextIO) -> in
         )
         return EXIT_ERROR
     try:
-        bot.run(once=args.once, poll_timeout=args.timeout)
+        bot.run(once=args.once, poll_timeout=args.timeout, on_error=lambda m: print(f"Telegram: {m}", file=err))
     except KeyboardInterrupt:  # Ctrl-C — обычное дело для демона
         print("остановлено", file=out)
         return EXIT_OK
+    except NotifyError as exc:  # опрос не прошёл совсем — это уже не «одно сообщение»
+        print(f"Telegram: {exc}", file=err)
+        return EXIT_ERROR
     return EXIT_OK
 
 
