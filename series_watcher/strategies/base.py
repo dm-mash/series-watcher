@@ -42,6 +42,8 @@ class Request:
     source: ScheduleSource
     limit: int = 5
     min_rating: float = 6.5
+    #: Сколько дней расписания смотреть: пул кандидатов — это то, что идёт в эфире.
+    schedule_days: int = 3
     #: Сериал, названный в запросе: «похожие на X» — сигналы только по нему.
     focus: Show | None = None
 

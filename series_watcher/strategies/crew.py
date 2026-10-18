@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Sequence
 
 from ..db import Show, normalize_name
@@ -17,7 +18,13 @@ from ..schedule import ROLE_LABELS, ROLE_WEIGHTS, ScheduleError
 from .base import Recommendation, Request
 
 SCRIPTED = "Scripted"
-DEFAULT_POOL = 8
+#: Статус, в котором сериал уже не выйдет. Трекер ждёт следующего эпизода, поэтому
+#: законченные в рекомендации не попадают: новая серия — их и так можно начать с
+#: любой точки. Неизвестный статус (нет данных) заканченным не считаем.
+ENDED = "Ended"
+#: Сколько работ наших авторов догружать из источника: каждый — запрос.
+#: Кэш идёт по id, поэтому повторный запуск бесплатный.
+DEFAULT_FETCHES = 8
 #: Сколько дней расписания смотреть: три дня — это три запроса к источнику.
 DEFAULT_SCHEDULE_DAYS = 3
 #: Порог для холодного старта: вкуса ещё нет, поэтому берём заметно ниже.
@@ -85,10 +92,13 @@ class CrewStrategy:
         authored = self._authored(request, basis)
 
         scored: dict[str, Recommendation] = {}
+        spare: list[ShowRecord] = []
         for record in self._pool(request, basis, authored):
             if f"{request.source.name}:{record.external_id}" in excluded:
                 continue
             if record.kind != SCRIPTED:
+                continue
+            if record.status == ENDED:
                 continue
             if record.rating is not None and record.rating < request.min_rating:
                 continue
@@ -110,6 +120,10 @@ class CrewStrategy:
                 reasons.append("жанры: " + ", ".join(shared))
 
             if not reasons:
+                # Общего с вашим списком ничего нет, но сериал хороший и идёт
+                # в эфире. Пригодится, если related-кандидатов не хватило на просьбу.
+                if record.rating is not None:
+                    spare.append(record)
                 continue
             scored[record.external_id] = Recommendation(
                 show=record,
@@ -121,7 +135,36 @@ class CrewStrategy:
         ranked = sorted(
             scored.values(), key=lambda item: (-item.score, -(item.show.rating or 0))
         )
-        return ranked[: request.limit]
+        picked = list(ranked[: request.limit])
+        if request.focus is None:
+            picked += self._top_up(spare, picked, request.limit)
+        return picked
+
+    @staticmethod
+    def _top_up(
+        spare: Sequence[ShowRecord], picked: Sequence[Recommendation], limit: int
+    ) -> list[Recommendation]:
+        """Добор по рейтингу, когда похожих не набралось.
+
+        Добавленные сериалы честно помечены: общего с вашим списком у них ничего
+        нет, и путать их с «похожими» нельзя. При явном фокусе («похожее на X»)
+        добора нет вовсе: человек спросил про X, а ему прислали бы чужое.
+        """
+        taken = {item.show.external_id for item in picked}
+        room = limit - len(picked)
+        if room <= 0:
+            return []
+        by_rating = sorted(spare, key=lambda item: (-(item.rating or 0.0), item.title))
+        return [
+            Recommendation(
+                show=record,
+                score=record.rating or 0.0,
+                reasons=("добор: идёт в эфире и хорошо оценён",),
+                via="добор",
+            )
+            for record in by_rating[:room]
+            if record.external_id not in taken
+        ]
 
     def cold_start(self, request: Request, *, limit: int = 3) -> Sequence[Recommendation]:
         """Первый запуск: вкуса ещё нет, предлагаем то, что сейчас в эфире."""
@@ -135,6 +178,8 @@ class CrewStrategy:
             if f"{request.source.name}:{record.external_id}" in excluded:
                 continue
             if record.kind != SCRIPTED:
+                continue
+            if record.status == ENDED:
                 continue
             if record.rating is not None and record.rating < COLD_START_MIN_RATING:
                 continue
@@ -188,16 +233,23 @@ class CrewStrategy:
         return result
 
     def _pool(self, request: Request, basis, authored: dict) -> list[ShowRecord]:
-        """Работы наших авторов плюс всё, что идёт в эфире."""
+        """Всё, что идёт в эфире, плюс работы наших авторов.
+
+        Расписание не обрезается: иначе в первых восьми по рейтингу окажутся
+        кулинарные шоу, а сценаристы и режиссёры ваших сериалов до отсева не
+        доживут. Лимит здесь — только на догрузку по сети, а не на размер пула.
+        """
         shows: dict[str, ShowRecord] = {}
         for record in self._airing(request):
             shows.setdefault(record.external_id, record)
         wanted = list(authored) + [
             str(show.key.external_id) for show in basis if show.key is not None
         ]
+        fetched = 0
         for external_id in wanted:
-            if external_id in shows or len(shows) >= DEFAULT_POOL:
+            if external_id in shows or fetched >= DEFAULT_FETCHES:
                 continue
+            fetched += 1
             try:
                 shows[external_id] = request.source.get_show(external_id)
             except Exception:  # noqa: BLE001
@@ -205,13 +257,26 @@ class CrewStrategy:
         for show in basis:
             if show.key is not None:
                 shows.setdefault(str(show.key.external_id), _tracked(None, show))
-        ranked = sorted(shows.values(), key=lambda item: (-(item.rating or 0.0), item.title))
-        return ranked[:DEFAULT_POOL]
+        return sorted(shows.values(), key=lambda item: (-(item.rating or 0.0), item.title))
 
     def _airing(self, request: Request) -> list[ShowRecord]:
-        """Сериалы из расписания. Без дней берётся всё расписание одним запросом."""
-        try:
-            entries = request.source.get_schedule()
-        except Exception:  # noqa: BLE001 - расписание не должно ронять подбор
-            return []
-        return [entry.show for entry in entries]
+        """Сериалы из расписания ближайших дней.
+
+        Расписание без даты — это «что идёт сейчас», пара десятков сериалов: из
+        такого пула после отсева почти ничего не остаётся. Поэтому смотрим
+        несколько дней вперёд — это несколько запросов, но все ответы кэшируются.
+        """
+        shows: dict[str, ShowRecord] = {}
+        for day in _upcoming(request.schedule_days):
+            try:
+                entries = request.source.get_schedule(day)
+            except Exception:  # noqa: BLE001 - расписание не должно ронять подбор
+                continue
+            for entry in entries:
+                shows.setdefault(entry.show.external_id, entry.show)
+        return list(shows.values())
+
+
+def _upcoming(days: int) -> list[str]:
+    today = date.today()
+    return [(today + timedelta(days=offset)).isoformat() for offset in range(1, max(days, 1) + 1)]

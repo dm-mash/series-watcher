@@ -17,7 +17,7 @@ from series_watcher.strategies import (
 from series_watcher.strategies.crew import COLD_START_MIN_RATING, CrewStrategy
 from series_watcher.tvmaze import TvMazeClient
 
-from conftest import load_fixture
+from conftest import load_fixture, pin_schedule
 
 SCHEDULE_DAY = "2026-10-19"
 
@@ -52,7 +52,7 @@ def parts(tmp_path, fake_tvmaze, sleeps):
     config = Config(notify_quiet_hours=None)
     fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
     fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    fake_tvmaze.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake_tvmaze)
     yield db, client, config, fake_tvmaze
     client.close()
     db.close()
@@ -72,7 +72,7 @@ def track(parts, tvmaze_id: int = 44933):
 
 
 def pin(fake, payload) -> None:
-    fake.add("/schedule", payload)
+    pin_schedule(fake, payload)
 
 
 # --- базовые случаи ---------------------------------------------------------
@@ -356,3 +356,161 @@ def test_reject_kinds_are_still_available(parts):
     db, _, _, _ = parts
     db.reject("999", ALREADY_WATCHED, title="Что-то")
     assert "tvmaze:999" in db.rejected_ids()
+
+
+def _rated(tvmaze_id: int, name: str, rating: float, genres: list[str], status: str = "Running") -> dict:
+    return {
+        "id": tvmaze_id,
+        "name": name,
+        "type": "Scripted",
+        "status": status,
+        "genres": list(genres),
+        "rating": {"average": rating},
+        "image": None,
+        "summary": None,
+        "network": None,
+        "webChannel": None,
+        "premiered": "2026-09-01",
+        "ended": None,
+        "runtime": 45,
+        "language": "English",
+        "externals": {},
+        "url": f"https://www.tvmaze.com/shows/{tvmaze_id}",
+    }
+
+
+def _aged(tvmaze_id: int, name: str, rating: float, genres: list[str]) -> dict:
+    return _rated(tvmaze_id, name, rating, genres, status="Ended")
+
+
+def _airing(*shows: dict) -> list[dict]:
+    """Запись расписания TVmaze: сериал и серия, которая с ним идёт."""
+    return [
+        {"show": show, "season": 1, "number": 1, "name": "pilot", "airstamp": "2026-10-19T20:00:00+00:00"}
+        for show in shows
+    ]
+
+
+def test_thin_pool_is_topped_up_by_rating(parts, fake_tvmaze):
+    """Похожих не нашлось — добираем хорошие и честно помечаем их как добор."""
+    db, client, config, fake = parts
+    track(parts)
+    pin_schedule(
+        fake,
+        _airing(
+            _rated(1, "Unrelated Gem", 9.1, ["Документальный"]),
+            _rated(2, "Okay Show", 7.0, ["Документальный"]),
+        ),
+    )
+
+    items = CrewStrategy().candidates(
+        Request(config=config, db=db, source=TvMazeSchedule(client), limit=3)
+    )
+
+    added = [item for item in items if item.via == "добор"]
+    # По рейтингу: девять и десять выше, чем семь, независимо от порядка в пуле.
+    assert [item.show.title for item in added] == ["Unrelated Gem", "Okay Show"]
+    assert all("добор" in item.reasons[0] for item in added)
+
+
+def test_top_up_gives_place_to_the_related_ones(parts, fake_tvmaze):
+    """Сначала похожие, добором — только остаток места."""
+    db, client, config, fake = parts
+    fake.add("/people/169453/crewcredits", person_credits(("Creator", 777, "Реванш")))
+    fake.add("/shows/777", show_payload(777, "Реванш", genres=["Drama"], rating={"average": 6.6}))
+    track(parts)
+    # В расписании только чужой сериал с рейтингом выше: место забирает похожий.
+    pin_schedule(fake, _airing(_rated(1, "Unrelated Gem", 9.1, ["Документальный"])))
+
+    items = CrewStrategy().candidates(
+        Request(config=config, db=db, source=TvMazeSchedule(client), limit=1)
+    )
+
+    assert [item.show.external_id for item in items] == ["777"]
+    assert items[0].via == "авторство"
+
+
+def test_focus_gets_no_unrelated_top_up(parts, fake_tvmaze):
+    """«Похожее на X» — про X, а не про хорошие сериалы вообще."""
+    from series_watcher.tvmaze import parse_show
+
+    db, client, config, fake = parts
+    track(parts)
+    db.upsert_show("tvmaze", TvMazeSchedule(client)._show(parse_show(show_payload(44934, "Focus Show"))))
+    focus = next(show for show in db.list_shows() if show.name == "Focus Show")
+    pin_schedule(fake, _airing(_rated(1, "Unrelated Gem", 9.1, ["Документальный"])))
+
+    items = CrewStrategy().candidates(
+        Request(config=config, db=db, source=TvMazeSchedule(client), limit=3, focus=focus)
+    )
+
+    assert all(item.via != "добор" for item in items)
+
+
+def test_authored_work_is_fetched_despite_a_big_schedule(parts, fake_tvmaze):
+    """Раньше лимит считался от размера пула: при большом расписании ветка
+    «работы наших авторов» не подгружалась никогда и рекомендации были только
+    жанровыми. Лимит теперь ограничивает число запросов, а не размер пула."""
+    db, client, config, fake = parts
+    fake.add("/people/169453/crewcredits", person_credits(("Creator", 777, "Реванш")))
+    fake.add("/shows/777", show_payload(777, "Реванш", genres=["Drama"], rating={"average": 8.5}))
+    track(parts)
+    pin_schedule(
+        fake,
+        _airing(*[_rated(100 + n, f"Шум {n}", 9.9 - n / 10, ["Комедия"]) for n in range(20)]),
+    )
+
+    items = run(parts, limit=5)
+
+    # Похожий по авторству — первым, добором ниже по рейтингу.
+    assert [item.via for item in items] == ["авторство", "добор", "добор", "добор", "добор"]
+    assert items[0].show.external_id == "777"
+
+
+def test_ended_shows_are_not_recommended(parts, fake_tvmaze):
+    """Трекер ждёт следующего эпизода: законченному сериалу тут не место.
+
+    Раньше такие вылезали по общему продюсеру — The Pacific (2002) в подборке к
+    Slow Horses выглядел как ошибка.
+    """
+    db, client, config, fake = parts
+    track(parts)
+    pin_schedule(
+        fake,
+        _airing(
+            _aged(1, "Old War Drama", 9.4, ["Drama"]),
+            _rated(2, "New Drama", 7.0, ["Drama"]),
+        ),
+    )
+
+    items = CrewStrategy().candidates(
+        Request(config=config, db=db, source=TvMazeSchedule(client), limit=5)
+    )
+
+    assert [item.show.title for item in items] == ["New Drama"]
+
+
+def test_unknown_status_is_treated_as_alive(parts, fake_tvmaze):
+    """Нет данных о статусе — это не «закончен»."""
+    db, client, config, fake = parts
+    track(parts)
+    payload = _airing(_rated(1, "Без статуса", 7.5, ["Drama"]))
+    payload[0]["show"]["status"] = None
+    pin_schedule(fake, payload)
+
+    items = CrewStrategy().candidates(
+        Request(config=config, db=db, source=TvMazeSchedule(client), limit=5)
+    )
+
+    assert [item.show.title for item in items] == ["Без статуса"]
+
+
+def test_cold_start_skips_ended_shows(parts, fake_tvmaze):
+    db, client, config, fake = parts
+    pin_schedule(fake, _airing(_aged(1, "Old War Drama", 9.4, ["Drama"])))
+
+    items = CrewStrategy().cold_start(
+        Request(config=config, db=db, source=TvMazeSchedule(client)), limit=3
+    )
+
+    assert list(items) == []

@@ -155,6 +155,23 @@ def sleeps() -> list[float]:
     return []
 
 
+def pin_schedule(fake, payload=None, *, days: int = 3) -> None:
+    """Расписание живёт в кэше по ключу «дата», поэтому вешаем и его, и даты.
+
+    Так тесты не зависят от того, какой сегодня день, и от того, спрашивает ли
+    стратегия расписание целиком или по дням.
+    """
+    import datetime
+
+    if payload is None:
+        payload = load_fixture("schedule")
+    fake.add("/schedule", payload)
+    today = datetime.date.today()
+    for offset in range(1, days + 1):
+        day = (today + datetime.timedelta(days=offset)).isoformat()
+        fake.add(f"/schedule?date={day}", payload)
+
+
 def store_show(db, payload: dict, source: str = "tvmaze"):
     """Положить карточку источника в базу так же, как это делает сервис."""
     from series_watcher.schedule import TvMazeSchedule

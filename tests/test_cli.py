@@ -13,7 +13,7 @@ from series_watcher.config import Config
 from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
 
-from conftest import load_fixture
+from conftest import load_fixture, pin_schedule
 
 
 @pytest.fixture
@@ -257,7 +257,7 @@ def test_recommend_on_empty_list_says_what_to_do(cli):
 def test_recommend_lists_candidates_with_reasons(cli, fake_tvmaze):
     fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
     fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    fake_tvmaze.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake_tvmaze)
     cli("add", "--id", "44933")
 
     code, out, _ = cli("recommend", "--limit", "3")
@@ -278,7 +278,7 @@ def test_reject_is_remembered(cli):
 
 
 def test_seed_offers_something_to_start_with(cli, fake_tvmaze):
-    fake_tvmaze.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake_tvmaze)
 
     code, out, _ = cli("seed", "--limit", "1")
 
@@ -300,7 +300,7 @@ def test_digest_can_include_recommendations(cli, fake_tvmaze):
     cli("add", "--id", "44933")
     fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
     fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
-    fake_tvmaze.add("/schedule", load_fixture("schedule"))
+    pin_schedule(fake_tvmaze)
 
     code, out, _ = cli("digest", "--recommend")
 
