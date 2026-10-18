@@ -354,7 +354,64 @@ class Database:
         ).fetchone()
         return int(row["n"])
 
+    def count_episodes_without_time(self, show_id: int) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM episodes WHERE show_id = ? AND airstamp IS NULL", (show_id,)
+        ).fetchone()
+        return int(row["n"])
+
+    def due_episodes(
+        self,
+        *,
+        now: datetime,
+        channel: str,
+        since: datetime | None = None,
+        show_row_id: int | None = None,
+    ) -> list[tuple[int, Episode]]:
+        """Эпизоды, которые уже вышли, но о которых ещё не сообщали.
+
+        «Вышел» — значит `airstamp` в UTC не позже `now`. Эпизоды без времени
+        сюда не попадают: единственный источник времени — `airstamp`.
+        Окно `since` нужно, чтобы добавление сериала с историей не превратилось
+        в поток из нескольких сотен уведомлений.
+
+        Возвращает пары (строка сериала в `shows`, эпизод): сам сериал вызывающий
+        код обычно уже держит в руках.
+        """
+        clauses = [
+            "e.airstamp IS NOT NULL",
+            "e.airstamp <= ?",
+            "e.watched_at IS NULL",
+            "NOT EXISTS (SELECT 1 FROM notifications n WHERE n.episode_id = e.id AND n.channel = ?)",
+        ]
+        params: list[object] = [to_iso_utc(now), channel]
+        if since is not None:
+            clauses.append("e.airstamp >= ?")
+            params.append(to_iso_utc(since))
+        if show_row_id is not None:
+            clauses.append("e.show_id = ?")
+            params.append(show_row_id)
+        rows = self._conn.execute(
+            f"""
+            SELECT id, show_id, tvmaze_episode_id, season, number, name, airstamp,
+                   airdate, airtime, runtime, summary, watched_at
+            FROM episodes e
+            WHERE {' AND '.join(clauses)}
+            ORDER BY airstamp, show_id, season, number
+            """,
+            params,
+        ).fetchall()
+        return [(row["show_id"], _row_to_episode(row)) for row in rows]
+
     # --- отправки -------------------------------------------------------
+
+    def mark_watched(self, episode_id: int, *, watched: bool = True) -> None:
+        """Отметка «я посмотрел»: про таком эпизоде больше не напоминаем."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE episodes SET watched_at = ? WHERE id = ?",
+                (self._clock() if watched else None, episode_id),
+            )
 
     def is_sent(self, episode_id: int, channel: str, kind: str = "new_episode") -> bool:
         row = self._conn.execute(

@@ -35,6 +35,13 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--id", type=int, dest="tvmaze_id", help="добавить по id TVmaze")
 
     sub.add_parser("list", help="показать отслеживаемые сериалы")
+
+    check = sub.add_parser("check", help="опросить расписание и показать, что пора сообщить")
+    check.add_argument(
+        "--lookback",
+        type=float,
+        help="сколько часов назад смотреть (по умолчанию NOTIFY_LOOKBACK_HOURS)",
+    )
     return parser
 
 
@@ -69,6 +76,8 @@ def main(argv: Sequence[str] | None = None, *, stdout: TextIO | None = None, std
             return _cmd_add(watcher, config, args, out, err)
         if args.command == "list":
             return _cmd_list(watcher, config, out)
+        if args.command == "check":
+            return _cmd_check(watcher, config, args.lookback, out)
     except TvMazeError as exc:
         print(f"TVmaze: {exc}", file=err)
         return EXIT_ERROR
@@ -157,6 +166,45 @@ def _cmd_list(watcher: SeriesWatcher, config: Config, out: TextIO) -> int:
     print(TVMAZE_CREDIT, file=out)
     _print_degradation(config, out)
     return EXIT_OK
+
+
+def _cmd_check(watcher: SeriesWatcher, config: Config, lookback: float | None, out: TextIO) -> int:
+    report = watcher.poll(lookback_hours=lookback)
+    print(
+        f"Проверено в {_format_when(report.checked_at, config)} ({config.tz_name}), "
+        f"сериалов: {len(report.shows)}",
+        file=out,
+    )
+
+    for item in report.shows:
+        if item.error:
+            print(file=out)
+            print(f"  {item.show.name}: не проверился — {item.error}", file=out)
+            continue
+        parts = [f"эпизодов: {item.episodes_total}", f"новых: {item.new_episodes}"]
+        if item.updated_episodes:
+            parts.append(f"обновлено: {item.updated_episodes}")
+        if item.without_time:
+            parts.append(f"без времени эфира: {item.without_time}")
+        print(file=out)
+        print(f"  {item.show.name} — {' · '.join(parts)}", file=out)
+
+    print(file=out)
+    if report.due:
+        print("Пора сообщить:", file=out)
+        for item in report.due:
+            title = f" «{item.episode.name}»" if item.episode.name else ""
+            print(
+                f"  {item.show.name} — {item.episode.code}{title} — "
+                f"{_format_when(item.episode.airstamp, config)}",
+                file=out,
+            )
+    else:
+        print("Пора сообщить: нечего, все вышедшие эпизоды уже отмечены.", file=out)
+
+    print(file=out)
+    print(TVMAZE_CREDIT, file=out)
+    return EXIT_ERROR if report.failed else EXIT_OK
 
 
 def _show_meta(show: Show) -> str:

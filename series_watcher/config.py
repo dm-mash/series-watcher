@@ -65,6 +65,7 @@ class Config:
     tvmaze_base_url: str = DEFAULT_BASE_URL
     tvmaze_cache_ttl: float = 21600.0
     tvmaze_rate_limit: tuple[int, float] = DEFAULT_RATE_LIMIT
+    notify_lookback_hours: float = 72.0
     tmdb_api_key: str | None = None
     justwatch_api_key: str | None = None
     telegram_bot_token: str | None = None
@@ -140,6 +141,7 @@ class Config:
             tvmaze_base_url=(env.get("TVMAZE_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
             tvmaze_cache_ttl=_float(env, "TVMAZE_CACHE_TTL", 21600.0),
             tvmaze_rate_limit=(rate_max, rate_window),
+            notify_lookback_hours=_float(env, "NOTIFY_LOOKBACK_HOURS", 72.0),
             tmdb_api_key=_opt(env, "TMDB_API_KEY"),
             justwatch_api_key=_opt(env, "JUSTWATCH_API_KEY"),
             telegram_bot_token=_opt(env, "TELEGRAM_BOT_TOKEN"),
