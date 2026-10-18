@@ -155,7 +155,7 @@ def test_digest_lists_upcoming_episodes(parts):
 
     text = watcher.digest(days=3, now=NOW)
 
-    assert "Ближайшие 3 дней" in text
+    assert "Ближайшие 3 дня" in text
     assert "Beyond the Gates" in text
     assert "S2026E196" in text
     assert "S2026E193" not in text  # уже вышедшие в дайджест не попадают

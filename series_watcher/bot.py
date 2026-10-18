@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping
 from .config import Config
 from .llm import LLMClient
 from .notify import TelegramApi
-from .nlu import Intent, parse
+from .nlu import ADD_SHOW, Intent, parse
 from .service import Reply, SeriesWatcher
 
 
@@ -54,10 +54,20 @@ class Bot:
         return parse(text, client=self._llm)
 
     def answer(self, text: str) -> Reply:
+        """Ответ на реплику. Пустой список — повод предложить, а не молчать.
+
+        Исключение — само добавление: если человек назвал сериал, его и добавляем.
+        """
         intent = self.understand(text)
+        if not self._watcher.db.list_shows() and intent.name != ADD_SHOW:
+            return self._watcher.cold_start_reply()
         return self._watcher.handle(intent)
 
     def handle_update(self, update: Mapping[str, Any]) -> HandledMessage | None:
+        callback = update.get("callback_query")
+        if isinstance(callback, Mapping):
+            return self._handle_callback(update, callback)
+
         message = update.get("message") or update.get("edited_message")
         if not isinstance(message, Mapping):
             return None
@@ -71,6 +81,29 @@ class Bot:
             update_id=int(update.get("update_id") or 0),
             chat_id=chat.get("id"),
             text=text,
+            reply=reply.text,
+            buttons=reply.buttons,
+        )
+
+    def _handle_callback(
+        self, update: Mapping[str, Any], callback: Mapping[str, Any]
+    ) -> HandledMessage | None:
+        """Нажатие кнопки: её данные — это команда, а не текст."""
+        data = callback.get("data")
+        message = callback.get("message") or {}
+        chat = message.get("chat") if isinstance(message, Mapping) else None
+        chat_id = chat.get("id") if isinstance(chat, Mapping) else None
+        if chat_id is None:
+            return None
+        if not isinstance(data, str) or not data:
+            reply = Reply(text="Кнопка без команды, напишите текстом.")
+        else:
+            reply = self._watcher.add_by_callback(data)
+        self._api.send_message(chat_id, reply.text, buttons=reply.buttons)
+        return HandledMessage(
+            update_id=int(update.get("update_id") or 0),
+            chat_id=chat_id,
+            text=f"@{data}",
             reply=reply.text,
             buttons=reply.buttons,
         )

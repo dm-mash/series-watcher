@@ -29,6 +29,8 @@ series-watcher check                    # опросить расписание 
 series-watcher run                      # опросить и разослать уведомления
 series-watcher run --dry-run            # показать тексты сообщений, не отправляя
 series-watcher digest --days 7          # сводка по ближайшим дням
+series-watcher digest --recommend       # та же сводка с подбором сериалов
+series-watcher seed                     # с чего начать, когда список пуст
 series-watcher recommend --limit 5      # подобрать сериалы по вашему списку
 series-watcher recommend --reject 12345 --reject-kind already_watched
 series-watcher bot                      # разговорный слой: опрос Telegram и ответы
@@ -124,10 +126,37 @@ series_watcher/
 ├── bot.py        # разговорный слой поверх сервиса
 ├── sources/      # «где смотреть»: свой файл, JustWatch
 ├── service.py    # добавление сериала, список, опрос, рассылка
-└── cli.py        # add / list / check / run / digest / recommend / bot
+└── cli.py        # add / list / check / run / digest / seed / recommend / bot
 ```
 
 Замысел целиком — в [PLAN.md](PLAN.md).
+
+## Фоновая работа
+
+Готовые юниты лежат в `deploy/`. Пути в них абсолютные и под этот каталог —
+поправьте `WorkingDirectory` и `ExecStart` под свой путь.
+
+```bash
+sudo cp deploy/series-watcher.service deploy/series-watcher.timer /etc/systemd/system/
+sudo cp deploy/series-watcher-weekly.service deploy/series-watcher-weekly.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now series-watcher.timer series-watcher-weekly.timer
+systemctl list-timers 'series-watcher*'
+```
+
+`series-watcher.timer` опрашивает расписание каждые 15 минут и шлёт уведомления о
+новых эпизодах. `series-watcher-weekly.timer` раз в неделю, по понедельникам,
+отправляет дайджест с подбором.
+
+Разговорный бот — отдельный процесс, ему нужен токен:
+
+```bash
+systemd-run --user --unit=series-watcher-bot \
+  /home/smash/series-watcher/.venv/bin/series-watcher bot
+```
+
+Ключи берутся из `.env` рядом с проектом: systemd их не читает, поэтому переменные
+окружения, нужные сервису, задаются в самом юните или в `EnvironmentFile`.
 
 ## Тесты
 

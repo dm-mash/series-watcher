@@ -219,7 +219,7 @@ def test_digest_is_printed_by_default(cli, fixed_now):
     code, out, _ = cli("--tz", "Europe/Moscow", "digest", "--days", "3")
 
     assert code == EXIT_OK
-    assert "Ближайшие 3 дней" in out
+    assert "Ближайшие 3 дня" in out
     assert "S2026E196" in out
     assert "tvmaze.com" in out
 
@@ -275,3 +275,40 @@ def test_reject_is_remembered(cli):
     assert code == EXIT_OK
     assert "больше не предлагаю" in out
     assert "not_interested" in out
+
+
+def test_seed_offers_something_to_start_with(cli, fake_tvmaze):
+    from series_watcher.recommend import _upcoming
+
+    for day in _upcoming(3):
+        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+
+    code, out, _ = cli("seed", "--limit", "1")
+
+    assert code == EXIT_OK
+    assert "С чего начать" in out
+    assert "добавить: series-watcher add --id" in out
+
+
+def test_seed_is_a_noop_when_list_is_not_empty(cli):
+    cli("add", "--id", "44933")
+
+    code, out, _ = cli("seed")
+
+    assert code == EXIT_OK
+    assert "Список не пуст" in out
+
+
+def test_digest_can_include_recommendations(cli, fake_tvmaze):
+    from series_watcher.recommend import _upcoming
+
+    cli("add", "--id", "44933")
+    fake_tvmaze.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake_tvmaze.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    for day in _upcoming(3):
+        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+
+    code, out, _ = cli("digest", "--recommend")
+
+    assert code == EXIT_OK
+    assert "Что бы посмотреть" in out

@@ -28,6 +28,8 @@ DEFAULT_MIN_RATING = 6.5
 DEFAULT_SCHEDULE_DAYS = 3
 #: Сколько сериалов разбирать подробно: каждый — это запросы к TVmaze.
 DEFAULT_POOL = 8
+#: Порог для холодного старта: вкуса ещё нет, поэтому берём заметно ниже.
+COLD_START_MIN_RATING = 5.5
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,45 @@ class Recommender:
 
         ranked = sorted(scored.values(), key=lambda item: (-item.score, -(item.show.rating or 0)))
         return ranked[:limit]
+
+    def cold_start(
+        self,
+        *,
+        limit: int = 3,
+        min_rating: float = COLD_START_MIN_RATING,
+        schedule_days: int = DEFAULT_SCHEDULE_DAYS,
+    ) -> list[Recommendation]:
+        """Первый запуск: вкуса ещё нет, предлагаем то, что сейчас в эфире.
+
+        Рейтинг ниже, чем при обычном подборе: иначе из расписания не проходит
+        почти ничего, а показать всё равно нужно что-то.
+        """
+        excluded = self.db.rejected_ids() | {
+            show.tvmaze_id for show in self.db.list_shows()
+        }
+        days = self.schedule_dates if self.schedule_dates is not None else _upcoming(schedule_days)
+        items: list[Recommendation] = []
+        for show in _schedule_shows(self.tvmaze, days):
+            if show.id in excluded or show.kind != SCRIPTED:
+                continue
+            if show.rating is not None and show.rating < min_rating:
+                continue
+            # Рейтинг уже есть в строке кандидата, в причинах его не повторяем.
+            reasons = []
+            if show.genres:
+                reasons.append("жанры: " + ", ".join(show.genres[:3]))
+            if show.network:
+                reasons.append(f"канал {show.network}")
+            items.append(
+                Recommendation(
+                    show=show,
+                    score=show.rating or 0.0,
+                    reasons=tuple(reasons) or ("идёт в эфире",),
+                    via="schedule",
+                )
+            )
+        items.sort(key=lambda item: (-item.score, item.show.name))
+        return items[:limit]
 
     # --- сигналы ---------------------------------------------------------
 

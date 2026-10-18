@@ -257,12 +257,18 @@ class SeriesWatcher:
             failed=tuple(failed),
         )
 
-    def digest(self, *, days: int = 7, now: datetime | None = None) -> str:
-        """Сводка по ближайшим дням: что и когда выходит."""
+    def digest(
+        self, *, days: int = 7, now: datetime | None = None, recommend: bool = False
+    ) -> str:
+        """Сводка по ближайшим дням: что и когда выходит.
+
+        С `recommend=True` добавляется подбор — так дайджест раз в неделю
+        отвечает на вопрос «что бы посмотреть», а не только «что когда выходит».
+        """
         moment = now if now is not None else utcnow()
         horizon = moment + timedelta(days=days)
         rows = self.db.upcoming_episodes(since=moment, until=horizon)
-        lines = [f"Ближайшие {days} дней:"]
+        lines = [f"{_plural_days(days)}:"]
         by_show: dict[str, list[str]] = {}
         for show, episode in rows:
             by_show.setdefault(show.name, []).append(
@@ -276,6 +282,15 @@ class SeriesWatcher:
             lines.extend(f"  {item}" for item in items)
         if not by_show:
             lines.append("пусто: расписание пустое или сериалов нет")
+        if recommend:
+            items = self.recommend(limit=3)
+            lines.append("")
+            lines.append("Что бы посмотреть:")
+            if not items:
+                lines.append("  подходящего не нашлось")
+            for item in items:
+                lines.append(f"  {item.line()} — {item.show.url or ''}".rstrip(" —"))
+                lines.append("    " + "; ".join(item.reasons))
         return footer(lines)
 
     def where_to_watch(self, show: Show, *, limit: int = 3) -> SourceAnswer:
@@ -416,13 +431,45 @@ class SeriesWatcher:
         recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze, tmdb=self.tmdb)
         return recommender.candidates(**options)  # type: ignore[arg-type]
 
+    def cold_start(self, *, limit: int = 3, schedule_days: int = 3) -> list[Recommendation]:
+        recommender = Recommender(config=self.config, db=self.db, tvmaze=self.tvmaze, tmdb=self.tmdb)
+        return recommender.cold_start(limit=limit, schedule_days=schedule_days)
+
     def reject(self, tvmaze_id: int, kind: str) -> bool:
         show = self.db.get_show_by_tvmaze_id(tvmaze_id)
         return self.db.reject(tvmaze_id, kind, title=show.name if show else None)
 
+    def cold_start_reply(self) -> Reply:
+        """Первый запуск: пустого списка не должно быть причиной молчать."""
+        items = self.cold_start()
+        if not items:
+            return Reply(text=footer(["В расписании ничего подходящего не нашлось. Добавьте сериал по названию."]))
+        lines = ["Список отслеживаемых пока пуст. Вот что идёт в эфире:"]
+        buttons = []
+        for item in items:
+            lines.append(f"{item.line()} — {item.show.url or ''}".rstrip(" —"))
+            lines.append("  " + "; ".join(item.reasons))
+            buttons.append((f"Добавить {item.show.name}", f"add {item.show.id}"))
+        lines.append("Или напишите название сериала — добавлю.")
+        return Reply(text=footer(lines), buttons=tuple(buttons))
+
+    def add_by_callback(self, payload: str) -> Reply:
+        """Кнопка «Добавить»: данные кнопки — это и есть команда."""
+        parts = payload.split()
+        if len(parts) != 2 or parts[0] != "add" or not parts[1].isdigit():
+            return Reply(text=footer(["Кнопка устарела, напишите запрос текстом."]))
+        try:
+            result = self.add_show_by_id(int(parts[1]))
+        except TvMazeError as exc:
+            return Reply(text=footer([f"Не получилось добавить: {exc}"]))
+        if result.show is None:
+            return Reply(text=footer(["Не получилось добавить сериал."]))
+        verb = "Уже отслеживается" if result.status == "exists" else "Добавлен"
+        return Reply(text=footer([f"{verb}: {result.show.name}", result.show.url or ""]))
+
     def _answer_recommend(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if not self.db.list_shows():
-            return Reply(text=footer(["Список пуст — добавлять нечего и рекомендовать не от чего."]))
+            return self.cold_start_reply()
         items = self.recommend()
         if not items:
             note = ""
@@ -481,3 +528,14 @@ def _episodes_for(episodes: Sequence[Episode], season: int | None, number: int |
         if (season is None or episode.season == season)
         and (number is None or episode.number == number)
     ]
+
+
+def _plural_days(days: int) -> str:
+    """«Ближайшие 1 день», «2 дня», «5 дней» — по-русски это три формы."""
+    if days % 10 == 1 and days % 100 != 11:
+        word = "день"
+    elif 2 <= days % 10 <= 4 and not 12 <= days % 100 <= 14:
+        word = "дня"
+    else:
+        word = "дней"
+    return f"Ближайшие {days} {word}"

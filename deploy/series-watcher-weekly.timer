@@ -1,0 +1,10 @@
+[Unit]
+Description=Series watcher: weekly digest on Monday morning
+Requires=series-watcher-weekly.service
+
+[Timer]
+OnCalendar=Mon 09:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

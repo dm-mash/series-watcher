@@ -209,3 +209,64 @@ def test_run_once_returns_after_a_single_pass(parts):
     bot.run(once=True)
 
     assert len(api.sent) == 2
+
+def callback_update(data: str, *, chat_id: int = 1, update_id: int = 5) -> dict:
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": "1",
+            "data": data,
+            "message": {"chat": {"id": chat_id}, "text": "Что добавить?"},
+        },
+    }
+
+
+def test_button_adds_the_show(parts, fake_tvmaze):
+    watcher, fake, _ = parts
+    fake.add("/shows/44933", load_fixture("show"))
+    fake.add("/shows/44933/episodes", load_fixture("episodes"))
+    bot, api = make_bot(watcher, [callback_update("add 44933")])
+
+    handled = bot.poll_once()
+
+    assert "Добавлен: Severance" in api.sent[0]["text"]
+    assert handled[0].text == "@add 44933"
+
+
+def test_button_for_unknown_show_is_reported(parts):
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [callback_update("add 999999")])
+
+    bot.poll_once()
+
+    assert "Не получилось добавить" in api.sent[0]["text"]
+
+
+def test_broken_button_data_asks_for_text(parts):
+    watcher, _, _ = parts
+    bot, api = make_bot(watcher, [callback_update("мусор")])
+
+    bot.poll_once()
+
+    assert "напишите" in api.sent[0]["text"].lower()
+
+
+def test_empty_list_offers_cold_start_instead_of_silence(tmp_path, fake_tvmaze, sleeps):
+    from series_watcher.recommend import _upcoming
+
+    db = Database(tmp_path / "test.db")
+    client = TvMazeClient(
+        transport=fake_tvmaze.transport(), cache=db, sleep=sleeps.append, rate_limit=(0, 10.0)
+    )
+    watcher = SeriesWatcher(config=Config(tz_name="Europe/Moscow"), db=db, tvmaze=client)
+    for day in _upcoming(3):
+        fake_tvmaze.add(f"/schedule?date={day}", load_fixture("schedule"))
+
+    bot, api = make_bot(watcher, [text_update("привет")])
+    bot.poll_once()
+
+    assert "Список отслеживаемых пока пуст" in api.sent[0]["text"]
+    assert api.sent[0]["buttons"]
+    assert api.sent[0]["buttons"][0][1].startswith("add ")
+    client.close()
+    db.close()

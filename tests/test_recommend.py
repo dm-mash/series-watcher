@@ -303,3 +303,30 @@ def test_tmdb_credits_are_cached(tmp_path):
 
     assert api.calls == ["/3/tv/12345/credits"]
     db.close()
+
+
+def test_cold_start_offers_what_is_on_air(recommender):
+    build, db, fake = recommender
+    pin(fake, SCHEDULE_DAY, load_fixture("schedule"))
+
+    items = build().cold_start()
+
+    assert items
+    assert all(item.via == "schedule" for item in items)
+    assert all(item.show.kind == "Scripted" for item in items)
+    assert all(any("канал" in reason or "жанры" in reason for reason in item.reasons) for item in items)
+
+
+def test_cold_start_respects_rejects(recommender):
+    build, db, fake = recommender
+    pin(fake, SCHEDULE_DAY, load_fixture("schedule"))
+    first = build().cold_start(limit=1)[0]
+    db.reject(first.show.id, NOT_INTERESTED, title=first.show.name)
+
+    assert first.show.id not in {item.show.id for item in build().cold_start(limit=20)}
+
+
+def test_cold_start_threshold_is_lower_than_usual():
+    from series_watcher.recommend import COLD_START_MIN_RATING, DEFAULT_MIN_RATING
+
+    assert COLD_START_MIN_RATING < DEFAULT_MIN_RATING

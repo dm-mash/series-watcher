@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
     digest = sub.add_parser("digest", help="сводка по ближайшим дням")
     digest.add_argument("--days", type=int, default=7, help="сколько дней вперёд (по умолчанию 7)")
     digest.add_argument("--send", action="store_true", help="отправить в Telegram, а не напечатать")
+    digest.add_argument(
+        "--recommend", action="store_true", help="добавить подбор сериалов (для недельного дайджеста)"
+    )
+
+    seed = sub.add_parser("seed", help="показать, с чего начать, когда список пуст")
+    seed.add_argument("--limit", type=int, default=3, help="сколько предложить (по умолчанию 3)")
 
     recommend = sub.add_parser("recommend", help="подобрать сериалы по вашему списку")
     recommend.add_argument("--limit", type=int, default=5, help="сколько показать (по умолчанию 5)")
@@ -141,6 +147,8 @@ def main(
             return _cmd_bot(bot, args, out, err)
         if args.command == "recommend":
             return _cmd_recommend(watcher, config, args, out, err)
+        if args.command == "seed":
+            return _cmd_seed(watcher, args, out)
     except TvMazeError as exc:
         print(f"TVmaze: {exc}", file=err)
         return EXIT_ERROR
@@ -312,8 +320,32 @@ def _cmd_run(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, o
     return EXIT_OK
 
 
+def _cmd_seed(watcher: SeriesWatcher, args: argparse.Namespace, out: TextIO) -> int:
+    if watcher.db.list_shows():
+        print("Список не пуст, добавлять нечего:", file=out)
+        for item in watcher.list_shows():
+            print(f"  {item.show.name}", file=out)
+        return EXIT_OK
+
+    items = watcher.cold_start(limit=args.limit)
+    if not items:
+        print("В расписании ничего подходящего не нашлось. Добавьте сериал по названию:", file=out)
+        print("  series-watcher add «Название»", file=out)
+        return EXIT_OK
+    print(f"С чего начать ({len(items)}):", file=out)
+    print(file=out)
+    for item in items:
+        print(f"  {item.line()}", file=out)
+        for reason in item.reasons:
+            print(f"    {reason}", file=out)
+        print(f"    добавить: series-watcher add --id {item.show.id}", file=out)
+        print(file=out)
+    print(TVMAZE_CREDIT, file=out)
+    return EXIT_OK
+
+
 def _cmd_digest(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
-    text = watcher.digest(days=args.days)
+    text = watcher.digest(days=args.days, recommend=args.recommend)
     if not args.send:
         print(text, file=out)
         return EXIT_OK

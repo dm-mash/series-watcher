@@ -1,0 +1,12 @@
+[Unit]
+Description=Series watcher: weekly digest with recommendations
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/smash/series-watcher
+Environment=TZ=Europe/Moscow
+ExecStart=/home/smash/series-watcher/.venv/bin/series-watcher digest --days 7 --recommend --send
+
+[Install]
+WantedBy=multi-user.target

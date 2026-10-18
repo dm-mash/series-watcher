@@ -1,0 +1,19 @@
+[Unit]
+Description=Series watcher: poll schedule and notify about new episodes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Абсолютные пути: у systemd свой PATH и своей рабочей директории нет.
+WorkingDirectory=/home/smash/series-watcher
+Environment=TZ=Europe/Moscow
+ExecStart=/home/smash/series-watcher/.venv/bin/series-watcher run
+# Не долбить TVmaze при неудаче: пауза и только одна попытка за запуск.
+Restart=on-failure
+RestartSec=300
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

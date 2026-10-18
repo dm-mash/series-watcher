@@ -1,0 +1,14 @@
+[Unit]
+Description=Series watcher: poll every 15 minutes
+Requires=series-watcher.service
+
+[Timer]
+# Сериалы выходят не по расписанию, поэтому смотрим чаще, чем раз в час.
+OnBootSec=2min
+OnUnitActiveSec=15min
+# Ночью уведомления всё равно не пошлют (тихий режим), опрос не мешает.
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
