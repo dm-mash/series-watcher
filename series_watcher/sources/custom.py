@@ -35,6 +35,26 @@ class CustomSource:
     def available(self) -> bool:
         return self.path.exists()
 
+    def add(
+        self, tvmaze_id: int, url: str, *, provider: str = "ссылка", kind: str | None = None
+    ) -> dict[str, Any]:
+        """Дописать ссылку, сохранив всё, что там уже было."""
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raw = {}
+        key = str(tvmaze_id)
+        offers = [item for item in (raw.get(key) or []) if isinstance(item, (Mapping, str))]
+        offers.append({"provider": provider, "url": url, **({"kind": kind} if kind else {})})
+        raw[key] = offers
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return {"provider": provider, "url": url, **({"kind": kind} if kind else {})}
+
     def where_to_watch(self, show: Show) -> Sequence[Offer]:
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))

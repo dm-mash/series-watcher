@@ -9,33 +9,27 @@ import pytest
 
 from series_watcher.config import Config, ConfigError
 
-KEY_NAMES = ("tmdb_api_key", "justwatch_api_key", "telegram_bot_token", "telegram_chat_id")
+KEY_NAMES = ("telegram_bot_token", "telegram_chat_id")
 
 
 def test_service_works_without_any_key():
     config = Config.from_env(env_file=None, environ={})
     assert config.missing_keys() == list(KEY_NAMES)
-    assert len(config.degradation_notes()) == 4
-    assert config.tmdb_api_key is None
+    assert len(config.degradation_notes()) == 2
+    assert config.telegram_bot_token is None
     assert config.telegram_chat_id is None
 
 
 def test_degradation_is_reported_plainly():
     notes = Config.from_env(env_file=None, environ={}).degradation_notes()
     joined = " ".join(notes)
-    assert "TMDB_API_KEY" in joined
     assert "TELEGRAM_BOT_TOKEN" in joined
+    assert "TELEGRAM_CHAT_ID" in joined
 
 
 def test_all_keys_present_means_no_degradation():
     config = Config.from_env(
-        env_file=None,
-        environ={
-            "TMDB_API_KEY": "t",
-            "JUSTWATCH_API_KEY": "j",
-            "TELEGRAM_BOT_TOKEN": "b",
-            "TELEGRAM_CHAT_ID": "42",
-        },
+        env_file=None, environ={"TELEGRAM_BOT_TOKEN": "b", "TELEGRAM_CHAT_ID": "42"}
     )
     assert config.missing_keys() == []
     assert config.degradation_notes() == []
@@ -43,8 +37,8 @@ def test_all_keys_present_means_no_degradation():
 
 
 def test_blank_key_counts_as_missing():
-    config = Config.from_env(env_file=None, environ={"TMDB_API_KEY": "   "})
-    assert "tmdb_api_key" in config.missing_keys()
+    config = Config.from_env(env_file=None, environ={"TELEGRAM_BOT_TOKEN": "   "})
+    assert "telegram_bot_token" in config.missing_keys()
 
 
 def test_env_values_are_parsed():
@@ -90,16 +84,16 @@ def test_chat_id_must_be_numeric():
 
 def test_replace_rejects_unknown_setting():
     with pytest.raises(ConfigError, match="неизвестные настройки"):
-        Config().replace(db_path="ok", tsmdb_api_key="typo")
+        Config().replace(db_path="ok", telegram_bot_toke="typo")
 
 
 def test_env_file_is_read(tmp_path):
     env_file = tmp_path / ".env"
-    env_file.write_text("TZ=Europe/Kaliningrad\nTMDB_API_KEY=local-key\n", encoding="utf-8")
+    env_file.write_text("TZ=Europe/Kaliningrad\nTELEGRAM_BOT_TOKEN=local-token\n", encoding="utf-8")
     try:
         config = Config.from_env(env_file=env_file, environ={})
         assert config.tz_name == "Europe/Kaliningrad"
-        assert config.tmdb_api_key == "local-key"
+        assert config.telegram_bot_token == "local-token"
     finally:
-        for name in ("TZ", "TMDB_API_KEY"):
+        for name in ("TZ", "TELEGRAM_BOT_TOKEN"):
             os.environ.pop(name, None)

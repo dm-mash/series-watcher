@@ -28,21 +28,9 @@ DEFAULT_RATE_LIMIT = (18, 10.0)
 DEFAULT_QUIET_HOURS = (23, 8)
 
 #: Ключи, без которых возможности выключаются, а не падают.
-KEY_FIELDS = (
-    "tmdb_api_key",
-    "justwatch_api_key",
-    "telegram_bot_token",
-    "telegram_chat_id",
-)
+KEY_FIELDS = ("telegram_bot_token", "telegram_chat_id")
 
 DEGRADATION_NOTES = {
-    "tmdb_api_key": (
-        "нет TMDB_API_KEY: рекомендации по режиссёрам и сценаристам "
-        "недоступны, остаются авторство из TVmaze и жанры"
-    ),
-    "justwatch_api_key": (
-        "нет JUSTWATCH_API_KEY: «где смотреть» отдаём только ссылку на TVmaze"
-    ),
     "telegram_bot_token": (
         "нет TELEGRAM_BOT_TOKEN: уведомления не отправляются, работает только CLI"
     ),
@@ -80,10 +68,7 @@ class Config:
     tvmaze_rate_limit: tuple[int, float] = DEFAULT_RATE_LIMIT
     notify_lookback_hours: float = 72.0
     notify_quiet_hours: tuple[int, int] | None = DEFAULT_QUIET_HOURS
-    justwatch_country: str = "RU"
     custom_sources_path: Path = Path("data/where_to_watch.json")
-    tmdb_api_key: str | None = None
-    justwatch_api_key: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
     llm_base_url: str | None = None
@@ -161,8 +146,6 @@ class Config:
             tvmaze_rate_limit=(rate_max, rate_window),
             notify_lookback_hours=_float(env, "NOTIFY_LOOKBACK_HOURS", 72.0),
             notify_quiet_hours=_quiet_hours(env.get("QUIET_HOURS")),
-            tmdb_api_key=_opt(env, "TMDB_API_KEY"),
-            justwatch_api_key=_opt(env, "JUSTWATCH_API_KEY"),
             telegram_bot_token=_opt(env, "TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=_opt(env, "TELEGRAM_CHAT_ID"),
             llm_base_url=_opt(env, "LLM_BASE_URL"),
@@ -170,7 +153,6 @@ class Config:
             llm_model=_opt(env, "LLM_MODEL"),
             llm_temperature=_float(env, "LLM_TEMPERATURE", 0.0),
             llm_max_tokens=_int(env, "LLM_MAX_TOKENS", 700),
-            justwatch_country=(env.get("JUSTWATCH_COUNTRY") or "RU").upper(),
             custom_sources_path=Path(env.get("CUSTOM_SOURCES_PATH") or Path("data/where_to_watch.json")),
         )
         return config

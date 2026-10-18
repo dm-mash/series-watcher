@@ -1,4 +1,4 @@
-"""Источники «где смотреть»: свой файл, JustWatch без ключа, деградация."""
+"""Источники «где смотреть»: свой файл, его разбор и деградация."""
 
 from __future__ import annotations
 
@@ -10,12 +10,9 @@ import pytest
 from series_watcher.db import Database
 from series_watcher.sources import SourceSet
 from series_watcher.sources.custom import CustomSource
-from series_watcher.sources.justwatch import JustWatchSource
 from series_watcher.tvmaze import parse_show
 
-from conftest import FakeGraphQL, load_fixture
-
-PROBES = load_fixture("justwatch_probe")
+from conftest import load_fixture
 
 
 @pytest.fixture
@@ -70,69 +67,10 @@ def test_custom_source_skips_broken_json(tmp_path, show):
         CustomSource(path).where_to_watch(show)
 
 
-def test_justwatch_without_key_makes_no_request(show):
-    fake = FakeGraphQL({"data": {}})
-    source = JustWatchSource(None, transport=fake.transport())
-
-    assert source.available() is False
-    assert fake.queries == []
-
-    from series_watcher.sources.base import SourceError
-
-    with pytest.raises(SourceError, match="JUSTWATCH_API_KEY"):
-        source.where_to_watch(show)
 
 
-def test_justwatch_reports_api_error(show):
-    """Ответ 422 на неверный запрос — реальный, сохранён при разведке схемы."""
-    probe = PROBES["title_list_required_args"]
-    fake = FakeGraphQL(probe["body"], status=probe["status"])
-    source = JustWatchSource("key", transport=fake.transport())
-
-    from series_watcher.sources.base import SourceError
-
-    with pytest.raises(SourceError, match="does not exist in"):
-        source.where_to_watch(show)
 
 
-def test_justwatch_empty_search_gives_no_offers(show):
-    """Пустые `edges` — тоже настоящий ответ: сериала в каталоге не нашлось."""
-    probe = PROBES["search_empty_edges"]
-    fake = FakeGraphQL(probe["body"], status=probe["status"])
-    source = JustWatchSource("key", transport=fake.transport())
-
-    assert list(source.where_to_watch(show)) == []
-    assert fake.queries[0]["variables"] == {"source": "Severance", "country": "RU"}
-
-
-def test_justwatch_parses_offers(show):
-    """Форма предложений живым запросом не подтверждена: ключа нет."""
-    fake = FakeGraphQL(
-        {
-            "data": {
-                "searchTitles": {"edges": [{"node": {"id": "show_1"}}]},
-                "nodes": [
-                    {
-                        "__typename": "Show",
-                        "offers": [
-                            {
-                                "monetizationType": "FLATRATE",
-                                "url": {"standardWebUrl": "https://www.justwatch.com/ru/сериал"},
-                            },
-                            {"monetizationType": "FREE", "url": {}},
-                        ],
-                    }
-                ],
-            }
-        }
-    )
-    source = JustWatchSource("key", transport=fake.transport())
-
-    offers = list(source.where_to_watch(show))
-
-    assert len(offers) == 1
-    assert offers[0].url.endswith("/сериал")
-    assert offers[0].kind == "подписка"
 
 
 def test_source_set_falls_back_to_the_next_source(tmp_path, show):
@@ -156,7 +94,7 @@ def test_source_set_reports_silence(tmp_path, show):
 
     assert answer.offers == ()
     assert answer.unavailable == ("свой",)
-    assert answer.lines() == ["где смотреть: источники молчат"]
+    assert answer.lines() == ["где смотреть: не настроено"]
 
 
 def test_source_set_survives_a_broken_source(tmp_path, show):
@@ -184,3 +122,26 @@ def _write(tmp_path: Path, show) -> Path:
         encoding="utf-8",
     )
     return path
+
+def test_custom_source_adds_links_without_losing_old(tmp_path, show):
+    path = tmp_path / "where.json"
+    path.write_text(json.dumps({"1": [{"provider": "Старый", "url": "https://example.com/1"}]}), encoding="utf-8")
+    source = CustomSource(path)
+
+    source.add(44933, "https://example.tv/s", provider="Кинопоиск", kind="подписка")
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["1"][0]["url"] == "https://example.com/1"
+    assert saved["44933"] == [
+        {"provider": "Кинопоиск", "url": "https://example.tv/s", "kind": "подписка"}
+    ]
+    assert [offer.url for offer in source.where_to_watch(show)] == ["https://example.tv/s"]
+
+
+def test_custom_source_creates_the_file(tmp_path, show):
+    path = tmp_path / "нет" / "where.json"
+
+    CustomSource(path).add(44933, "https://example.tv/s")
+
+    assert path.exists()
+    assert CustomSource(path).available() is True

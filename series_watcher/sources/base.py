@@ -55,9 +55,10 @@ class SourceAnswer:
     source: str | None = None
     unavailable: tuple[str, ...] = ()
 
-    def lines(self, limit: int = 3) -> list[str]:
+    def lines(self, limit: int = 3, *, hint: str | None = None) -> list[str]:
+        """Строки для сообщения. Без находок — не «молчат», а что делать."""
         if not self.offers:
-            return ["где смотреть: источники молчат"]
+            return ["где смотреть: не настроено" + (f" — {hint}" if hint else "")]
         return [f"где смотреть: {offer.line()} — {offer.url}" for offer in self.offers[:limit]]
 
 
