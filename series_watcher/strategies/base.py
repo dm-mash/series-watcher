@@ -15,6 +15,14 @@ from ..models import ShowRecord
 from ..schedule import ScheduleSource
 
 
+class StrategyError(Exception):
+    """Рекомендатель не смог отработать: модель не ответила или не настроена.
+
+    Отдельный тип, а не пустой список: «ничего не нашлось» и «сервис не смог»
+    — разные вещи, и путать их хуже, чем сказать прямо.
+    """
+
+
 @dataclass(frozen=True)
 class Recommendation:
     """Кандидат с объяснением. Объяснение собирается из фактов, не из вдохновения."""
@@ -57,6 +65,12 @@ class Request:
     schedule_days: int = 3
     #: Сериал, названный в запросе: «похожие на X» — сигналы только по нему.
     focus: Show | None = None
+    #: Клиент модели. Стратегия, которая в нём нужна, требует его настроенным;
+    #: та, что не нужна, работает и без него.
+    llm: object | None = None
+    #: Пожелание словами: «что-то лёгкое на вечер». Для правил непонятно, для
+    #: модели — самый прямой способ объяснить, чего человек хочет.
+    mood: str | None = None
 
     @property
     def basis(self) -> list[Show]:
@@ -71,3 +85,52 @@ class Strategy(Protocol):
 
     def candidates(self, request: Request) -> Sequence[Recommendation]:
         """Подходящие сериалы. Пусто — значит, подходящих нет."""
+
+    def cold_start(self, request: Request, *, limit: int = 3) -> Sequence[Recommendation]:
+        """Что предложить, когда список ещё пуст.
+
+        У отдельных рекомендателей тут бывает своя логика, у общих — общий пул.
+        """
+
+
+def airing_shows(request: Request) -> list[ShowRecord]:
+    """Сериалы из расписания ближайших дней.
+
+    Расписание без даты — это «что идёт сейчас», пара десятков сериалов: из
+    такого пула после отсева почти ничего не остаётся. Поэтому смотрим
+    несколько дней вперёд — это несколько запросов, но все ответы кэшируются.
+    """
+    from datetime import date, timedelta
+
+    shows: dict[str, ShowRecord] = {}
+    for offset in range(1, max(request.schedule_days, 1) + 1):
+        day = (date.today() + timedelta(days=offset)).isoformat()
+        try:
+            entries = request.source.get_schedule(day)
+        except Exception:  # noqa: BLE001 - расписание не должно ронять подбор
+            continue
+        for entry in entries:
+            shows.setdefault(entry.show.external_id, entry.show)
+    return list(shows.values())
+
+
+def usable_pool(request: Request) -> list[ShowRecord]:
+    """Кандидаты, которых вообще можно предлагать.
+
+    Общий отсев для всех стратегий: иначе каждая проверяет одно и то же
+    отдельно, и правила расходятся между собой — вчера одно, сегодня другое.
+    """
+    excluded = {
+        f"{request.source.name}:{show.key.external_id}"
+        for show in request.db.list_shows()
+        if show.key
+    }
+    excluded |= request.db.rejected_ids()
+    return [
+        show
+        for show in airing_shows(request)
+        if f"{request.source.name}:{show.external_id}" not in excluded
+        and show.kind == "Scripted"
+        and show.status != "Ended"
+        and (show.rating is None or show.rating >= request.min_rating)
+    ]

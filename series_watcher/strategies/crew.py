@@ -8,14 +8,14 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Sequence
 
 from ..db import Show, normalize_name
 from ..models import ShowRecord
 from ..schedule import ROLE_LABELS, ROLE_WEIGHTS, ScheduleError
-from .base import Recommendation, Request
+from .base import Recommendation, Request, usable_pool
 
 SCRIPTED = "Scripted"
 #: Статус, в котором сериал уже не выйдет. Трекер ждёт следующего эпизода, поэтому
@@ -168,21 +168,8 @@ class CrewStrategy:
 
     def cold_start(self, request: Request, *, limit: int = 3) -> Sequence[Recommendation]:
         """Первый запуск: вкуса ещё нет, предлагаем то, что сейчас в эфире."""
-        excluded = request.db.rejected_ids() | {
-            f"{request.source.name}:{show.key.external_id}"
-            for show in request.db.list_shows()
-            if show.key
-        }
         items: list[Recommendation] = []
-        for record in self._airing(request):
-            if f"{request.source.name}:{record.external_id}" in excluded:
-                continue
-            if record.kind != SCRIPTED:
-                continue
-            if record.status == ENDED:
-                continue
-            if record.rating is not None and record.rating < COLD_START_MIN_RATING:
-                continue
+        for record in usable_pool(replace(request, min_rating=COLD_START_MIN_RATING)):
             reasons = []
             if record.genres:
                 reasons.append("жанры: " + ", ".join(record.genres[:3]))

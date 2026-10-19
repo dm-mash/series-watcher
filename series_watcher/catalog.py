@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import re
+
 from typing import Any, Mapping, Sequence
 
 from .llm import LLMClient, LLMError
@@ -108,6 +110,61 @@ def title_from_description(description: str, *, llm: LLMClient | None) -> str | 
         return None
     title = data.get("title")
     return title.strip() if isinstance(title, str) and title.strip() else None
+
+
+TITLE_PROMPT_TEXT = (
+    "Назови сериал по описанию. Ответь только названием, как оно записано "
+    "в каталоге, на языке оригинала. Без пояснений, без кавычек, без точки.\n"
+    "Описание может быть обрывочным или пересказанным: ищи по тому, что в нём "
+    "есть, а не по точному совпадению. Один сериал всегда ближе, чем отказ. "
+    "Отвечай НЕТ только если это точно не сериал вовсе."
+)
+
+
+#: Размышляющие модели съедают бюджет на размышление: общего `LLM_MAX_TOKENS`
+#: хватало на пустой обрывок вместо названия.
+TITLE_MAX_TOKENS = 1500
+
+
+def describe_title(description: str, *, llm: LLMClient | None) -> str | None:
+    """Описание → название сериала. Ошибка модели наружу, а не тишина.
+
+    Формат ответа — обычный текст, а не JSON: принудительная схема у части
+    моделей возвращает пустую генерацию, и описание молча превращалось в
+    «сериала нет».
+    """
+    client = _client(llm)
+    if client is None or not description or not description.strip():
+        return None
+    reply = client.complete(
+        [
+            {"role": "system", "content": TITLE_PROMPT_TEXT},
+            {"role": "user", "content": description},
+        ],
+        max_tokens=TITLE_MAX_TOKENS,
+    )
+    return _clean_title(reply.text)
+
+
+def _clean_title(text: str) -> str | None:
+    """Из ответа модели — только название, без обвязки и болтовни."""
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    title = line.strip()
+    junk = ('"', "'", "*", "«", "»", "\u201c", "\u201d", ".", ",", ":", ";", "\u2014", "-")
+    # Обрезка в несколько проходов: точка в конце прячет за собой закрывающую
+    # кавычку, и за один проход она остаётся висеть в названии.
+    for _ in range(len(junk)):
+        stripped = title
+        for char in junk:
+            stripped = stripped.strip(char)
+        if stripped == title:
+            break
+        title = stripped
+    if not title or len(title) > 80:
+        return None
+    if len(title.split()) > 6:
+        return None
+    return title
 
 
 def pick_show(
@@ -226,3 +283,99 @@ def _one_sentence(text: str, limit: int = 140) -> str | None:
     if len(cleaned) > limit:
         cleaned = cleaned[: limit - 1].rsplit(" ", 1)[0]
     return cleaned
+
+#: Размышляющие модели съедают на ответ несколько тысяч токенов: общий
+#: `LLM_MAX_TOKENS` на список кандидатов не хватает, и подбор заканчивался ничем.
+RANK_MAX_TOKENS = 4000
+
+RANK_PROMPT = (
+    "Ты отбираешь сериалы из готового списка кандидатов для человека, который уже "
+    "что-то смотрит.\n"
+    "Правила ответа:\n"
+    "- строка вида `<номер> | <причина>`: номер — это номер строки в списке "
+    "кандидатов, рядом с названием;\n"
+    "- причина — одна фраза НА РУССКОКОМ, до 15 слов, только из карточки кандидата;\n"
+    "- не пиши «атмосферный», «легендарный» и прочие оценки: в карточке их нет;\n"
+    "- больше строк, чем попросили, не пиши; выбирай только из списка."
+)
+
+#: Строка ответа: номер кандидата и причина через вертикальную черту.
+_RANK_LINE = re.compile(r"^\s*(\d{1,6})\s*[|)\-.–]\s*(.+?)\s*$")
+
+
+def rank_candidates(
+    candidates: Sequence[ShowRecord],
+    *,
+    basis: Sequence[ShowRecord],
+    limit: int,
+    llm: LLMClient | None,
+    mood: str | None = None,
+) -> list[tuple[ShowRecord, str]]:
+    """Попросить модель выбрать сериалы из настоящих кандидатов.
+
+    Отличие от «посоветуй сериалы»: список кандидатов — это то, что реально идёт
+    в эфире, а память модели тут не используется вовсе. Всё, что она назвала и
+    чего в списке нет, отбрасывается.
+
+    Формат ответа — обычный текст, а не JSON: принудительная схема у части
+    моделей возвращает пустую генерацию, и подбор молча заканчивался ничем.
+    """
+    client = _client(llm)
+    if client is None or not candidates:
+        return []
+    # Кандидаты нумеруются по порядку, а не своими id: настоящие номера сериалов
+    # модель охотно подставляет по памяти, и тогда ответ не про то, что в эфире.
+    listing = "\n".join(_facts(number, show) for number, show in enumerate(candidates, start=1))
+    watched = "\n".join(f"- {show.title} ({', '.join(show.genres)})" for show in basis)
+    try:
+        reply = client.complete(
+            [
+                {"role": "system", "content": RANK_PROMPT},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Что человек уже смотрит:\n{watched}\n\n"
+                        f"Кандидаты:\n{listing}\n\n"
+                        f"Выбери {limit}."
+                        + (f"\nПожелание: {mood}" if mood else "")
+                    ),
+                },
+            ],
+            max_tokens=RANK_MAX_TOKENS,
+        )
+    except LLMError:
+        # Ошибка модели не превращается в пустой список: «модель молчит» и
+        # «подходящих нет» — разные вещи, и сказать надо что есть.
+        raise
+    by_number = {str(number): show for number, show in enumerate(candidates, start=1)}
+    picked: list[tuple[ShowRecord, str]] = []
+    seen: set[str] = set()
+    for line in reply.text.splitlines():
+        match = _RANK_LINE.match(line)
+        if match is None:
+            continue
+        show = by_number.get(match.group(1))
+        if show is None or show.external_id in seen:
+            continue
+        seen.add(show.external_id)
+        why = _one_sentence(match.group(2), limit=120)
+        if why:
+            picked.append((show, why))
+        if len(picked) >= limit:
+            break
+    return picked
+
+
+def _facts(number: int, show: ShowRecord) -> str:
+    """Карточка кандидата для модели: только то, что пришло из источника."""
+    parts = [f"{number}. {show.title}"]
+    details = [
+        ", ".join(show.genres) if show.genres else "",
+        f"рейтинг {show.rating}" if show.rating is not None else "",
+        show.network or "",
+        (show.premiered or "")[:4],
+        show.status or "",
+    ]
+    summary = _one_sentence(show.summary or "", limit=200)
+    line = f"  ({'; '.join(part for part in details if part)})"
+    return f"{parts[0]}{line}\n  {summary}" if summary else f"{parts[0]}{line}"

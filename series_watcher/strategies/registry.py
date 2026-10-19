@@ -11,9 +11,11 @@ from ..db import Database
 from ..schedule import ScheduleSource
 from .base import Recommendation, Request, Strategy
 from .crew import CrewStrategy
+from .model import ModelStrategy
 
 FACTORIES: dict[str, type] = {
     CrewStrategy.name: CrewStrategy,
+    ModelStrategy.name: ModelStrategy,
 }
 
 
@@ -43,6 +45,8 @@ def build(
     limit: int = 5,
     min_rating: float | None = None,
     focus=None,
+    llm=None,
+    mood: str | None = None,
 ) -> list[Recommendation]:
     request = Request(
         config=config,
@@ -51,5 +55,7 @@ def build(
         limit=limit,
         min_rating=min_rating if min_rating is not None else 6.5,
         focus=focus,
+        llm=llm,
+        mood=mood,
     )
     return list(get(name).candidates(request))
