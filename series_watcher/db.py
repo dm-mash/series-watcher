@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Sequence
 
@@ -96,6 +96,30 @@ CREATE TABLE IF NOT EXISTS http_cache (
     url        TEXT NOT NULL,
     payload    TEXT NOT NULL,
     fetched_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS torrents (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_id  INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
+    source      TEXT    NOT NULL,
+    external_id TEXT    NOT NULL,
+    filename    TEXT    NOT NULL,
+    size        TEXT,
+    seeders     INTEGER NOT NULL DEFAULT 0,
+    leechers    INTEGER NOT NULL DEFAULT 0,
+    url         TEXT,
+    magnet      TEXT,
+    found_at    TEXT    NOT NULL,
+    UNIQUE (episode_id, source, external_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_torrents_episode ON torrents (episode_id, seeders DESC);
+
+-- Когда последний раз искали: по этому считаем паузу между попытками.
+CREATE TABLE IF NOT EXISTS torrent_searches (
+    episode_id  INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+    searched_at TEXT    NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0
 );
 """
 
@@ -221,6 +245,22 @@ class Episode:
 
 
 @dataclass(frozen=True)
+class TorrentRow:
+    """Найденная раздача из базы. Магнет кэшируем здесь же: иначе пришлось бы
+    дёргать трекер каждый раз, когда человек снова спросит про ту же серию."""
+
+    source: str
+    external_id: str
+    filename: str
+    size: str | None = None
+    seeders: int = 0
+    leechers: int = 0
+    url: str | None = None
+    magnet: str | None = None
+    found_at: str | None = None
+
+
+@dataclass(frozen=True)
 class Reject:
     """Отказ от рекомендации: «не интересно» или «уже смотрел»."""
 
@@ -257,6 +297,19 @@ class Database:
         self._check_schema()
         with self._conn:
             self._conn.executescript(SCHEMA)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Дописать колонки, которых нет в уже созданной таблице.
+
+        `CREATE TABLE IF NOT EXISTS` молча оставляет старую таблицу как есть, а
+        `SELECT magnet` на ней падает. Одна колонка — один `ALTER TABLE`, без
+        пересборки базы.
+        """
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(torrents)")}
+        if columns and "magnet" not in columns:
+            with self._conn:
+                self._conn.execute("ALTER TABLE torrents ADD COLUMN magnet TEXT")
 
     def _check_schema(self) -> None:
         """Старая база не чинится молча: её удаляют и заводят заново."""
@@ -589,6 +642,149 @@ class Database:
                 "UPDATE episodes SET watched_at = ? WHERE id = ?",
                 (self._clock() if watched else None, episode_id),
             )
+
+    # --- раздачи ---------------------------------------------------------
+
+    def save_torrents(self, episode_id: int, hits: Iterable) -> int:
+        """Положить найденные раздачи. Повторный поиск не плодит дубликаты.
+
+        Раздачи с нулевыми сидами не сохраняем: они мёртвые, и завтра их всё
+        равно придётся искать заново.
+        """
+        now = self._clock()
+        saved = 0
+        with self._conn:
+            for hit in hits:
+                if getattr(hit, "seeders", 0) <= 0:
+                    continue
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO torrents (
+                        episode_id, source, external_id, filename, size,
+                        seeders, leechers, url, magnet, found_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(episode_id, source, external_id) DO UPDATE SET
+                        seeders = excluded.seeders,
+                        leechers = excluded.leechers,
+                        url = excluded.url,
+                        magnet = excluded.magnet
+                    """,
+                    (
+                        episode_id,
+                        hit.source,
+                        hit.torrent_id,
+                        hit.filename,
+                        getattr(hit, "size", None),
+                        int(getattr(hit, "seeders", 0) or 0),
+                        int(getattr(hit, "leechers", 0) or 0),
+                        getattr(hit, "page_url", None),
+                        getattr(hit, "magnet", None),
+                        now,
+                    ),
+                )
+                saved += max(cursor.rowcount, 0)
+        return saved
+
+    def torrents_for(self, episode_id: int, *, limit: int = 5) -> list[TorrentRow]:
+        """Найденные раздачи серии, сначала живые и с наибольшим числом сидов."""
+        rows = self._conn.execute(
+            """
+            SELECT source, external_id, filename, size, seeders, leechers, url, magnet, found_at
+            FROM torrents
+            WHERE episode_id = ?
+            ORDER BY seeders DESC, filename
+            LIMIT ?
+            """,
+            (episode_id, limit),
+        ).fetchall()
+        return [TorrentRow(**dict(row)) for row in rows]
+
+    def set_torrent_magnet(self, episode_id: int, row: "TorrentRow", magnet: str) -> None:
+        """Дописать магнет к сохранённой раздаче.
+
+        Отдельным запросом, а не перезаписью: магнет мог не отдаться в первый раз
+        (трекер прячет), и обновлять надо только его одно поле. Серия в условии
+        обязательна: одна и та же раздача может лежать в нескольких сериях.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE torrents SET magnet = ?
+                WHERE episode_id = ? AND source = ? AND external_id = ?
+                """,
+                (magnet, episode_id, row.source, row.external_id),
+            )
+
+    def has_torrents(self, episode_id: int) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM torrents WHERE episode_id = ? LIMIT 1", (episode_id,)
+        ).fetchone()
+        return row is not None
+
+    def mark_torrent_search(self, episode_id: int, *, hits: int = 0, at: datetime | None = None) -> None:
+        """Запомнить, что поиск был: иначе следующий опрос полезет снова.
+
+        Время передаётся вызывающим: у опроса может быть своё «сейчас», и пауза
+        между попытками обязана считаться по нему, а не по настенным часам.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO torrent_searches (episode_id, searched_at, hits)
+                VALUES (?, ?, ?)
+                ON CONFLICT(episode_id) DO UPDATE SET
+                    searched_at = excluded.searched_at,
+                    hits = excluded.hits
+                """,
+                (episode_id, to_iso_utc(at) if at else self._clock(), hits),
+            )
+
+    def last_torrent_search(self, episode_id: int) -> str | None:
+        row = self._conn.execute(
+            "SELECT searched_at FROM torrent_searches WHERE episode_id = ?", (episode_id,)
+        ).fetchone()
+        return row["searched_at"] if row else None
+
+    def episodes_to_search(
+        self, *, now: datetime, channel: str, retry_hours: float, retry_days: float
+    ) -> list[tuple[int, Episode]]:
+        """Серии, которые пора поискать: вышли недавно, о раздаче не сообщали,
+        а с прошлого поиска прошло достаточно времени.
+
+        Окно в `retry_days` нужно потому, что раздачи появляются с задержкой:
+        сразу после эфира их обычно ещё нет. Пауза в `retry_hours` бережёт
+        трекеры: один поиск — это скрейпинг восьми сайтов. О находке сообщаем
+        отдельно от «вышел»: одно не отменяет другое.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT e.id, e.show_id, e.external_id, e.season, e.number, e.name, e.aired_at,
+                   e.runtime, e.summary, e.summary_ru, e.watched_at
+            FROM episodes e
+            JOIN shows s ON s.id = e.show_id
+            WHERE e.aired_at IS NOT NULL
+              AND s.checked_at IS NOT NULL
+              AND e.aired_at <= ?
+              AND e.aired_at >= ?
+              AND e.watched_at IS NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM notifications n
+                  WHERE n.episode_id = e.id AND n.channel = ? AND n.kind = 'torrent'
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM torrent_searches ts
+                  WHERE ts.episode_id = e.id AND ts.searched_at >= ?
+              )
+            ORDER BY e.aired_at DESC, e.show_id, e.season, e.number
+            """,
+            (
+                to_iso_utc(now),
+                to_iso_utc(now - timedelta(days=retry_days)),
+                channel,
+                to_iso_utc(now - timedelta(hours=retry_hours)),
+            ),
+        ).fetchall()
+        return [(row["show_id"], _row_to_episode(row)) for row in rows]
 
     def is_sent(self, episode_id: int, channel: str, kind: str = "new_episode") -> bool:
         row = self._conn.execute(

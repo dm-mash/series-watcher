@@ -14,6 +14,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0"]
+# Поиск раздач: без него сервис работает как обычно, просто не ищет.
+torrent = ["torrent-search-mcp>=4.6.1"]
 
 [project.scripts]
 series-watcher = "series_watcher.cli:main"

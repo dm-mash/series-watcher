@@ -10,6 +10,7 @@ from series_watcher.nlu import (
     ADD_SHOW,
     CONFIDENCE_FLOOR,
     DIGEST,
+    DOWNLOAD,
     LIST,
     MARK_WATCHED,
     RECOMMEND,
@@ -90,6 +91,27 @@ def test_model_intent_wins_when_confident(sleeps):
         "Безупречный Вес",
         0.95,
     )
+
+
+def test_confident_model_cannot_lose_the_episode_code(sleeps):
+    """Модель на «найди раздачи для MobLand S02E04» отвечает уверенно, но код
+    серии теряет. Правила на таких деталях точнее, поэтому код и «сколько штук»
+    берём из текста всегда, поверх ответа модели."""
+    fake = FakeLLM(intent_json(intent=DOWNLOAD, confidence=0.99, show="MobLand"))
+    intent = parse("найди раздачи для MobLand S02E04", client=client(fake, sleeps))
+
+    assert intent.name == DOWNLOAD
+    assert "S02E04" in (intent.show or "")
+    assert (intent.season, intent.number) == (2, 4)
+
+
+def test_confident_model_cannot_lose_the_count(sleeps):
+    """То же с числом: «посоветуй штук 5» — это limit 5, а не None."""
+    fake = FakeLLM(intent_json(intent=RECOMMEND, confidence=0.9))
+    intent = parse("посоветуй штук 5", client=client(fake, sleeps))
+
+    assert intent.name == RECOMMEND
+    assert intent.limit == 5
 
 
 def test_uncertain_model_falls_back_to_rules(sleeps):
@@ -192,3 +214,34 @@ def test_count_does_not_swallow_the_title():
     intent = rules("порекомендуй похожее на slow horses, штук 5")
     assert intent.show == "slow horses"
     assert intent.limit == 5
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("где скачать S02E05", "download"),
+        ("найди раздачу для slow horses s02e05", "download"),
+        ("что нового", "what_new"),
+    ],
+)
+def test_download_intent_is_recognised(phrase, expected):
+    assert rules(phrase).name == expected
+
+
+def test_download_intent_keeps_the_show_name():
+    assert rules("скачать серию Slow Horses S02E05").show == "Slow Horses S02E05"
+
+
+@pytest.mark.parametrize(
+    ("phrase", "expected"),
+    [
+        ("найди раздачи для MobLand S02E04", "MobLand S02E04"),
+        ("найди раздачу для MobLand S02E04", "MobLand S02E04"),
+        ("найди раздачу MobLand S02E04", "MobLand S02E04"),
+        ("найди раздачи для MobLand", "MobLand"),
+        ("где скачать S02E05", "S02E05"),
+    ],
+)
+def test_download_phrase_keeps_the_show_and_the_code(phrase, expected):
+    """Род. падеж «раздачи для» — тоже раздачи, а «для» не часть названия."""
+    assert rules(phrase).show == expected

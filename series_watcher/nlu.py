@@ -8,7 +8,7 @@ Telegram — запасной путь, когда разбор неуверен
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from .llm import LLMClient, LLMError
@@ -22,6 +22,7 @@ DIGEST = "digest"
 LIST = "list"
 ABOUT = "about"
 RECOMMEND = "recommend"
+DOWNLOAD = "download"
 UNKNOWN = "unknown"
 
 INTENTS = (
@@ -34,6 +35,7 @@ INTENTS = (
     LIST,
     ABOUT,
     RECOMMEND,
+    DOWNLOAD,
     UNKNOWN,
 )
 
@@ -64,6 +66,8 @@ SYSTEM_PROMPT = (
     "unsubscribe (перестать отслеживать), digest (сводка по расписанию на "
     "несколько дней), list (показать список отслеживаемых сериалов и когда "
     "выходит следующий эпизод), recommend (порекомендовать сериал), "
+    "download (найти раздачу серии: «где скачать S02E05» — название и код серии "
+    "кладите в show), "
     "unknown (не понял).\n"
     "Возвращай только JSON по схеме. Не выдумывай сериалов: если название не названо, "
     "верни пустую строку. confidence — насколько уверен в разборе.\n"
@@ -85,6 +89,14 @@ _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (WHAT_NEW, re.compile(r"(что нового|новые серии|что вышл|вышел ли|новости)", re.I)),
     (
+        DOWNLOAD,
+        re.compile(
+            r"(где скачать|найди раздач|раздач\w* для|скачать серию|"
+            r"(?:для|серию)\s*s\d{1,4}e\d{1,3}\b|\bs\d{1,4}e\d{1,3}\b)",
+            re.I,
+        ),
+    ),
+    (
         RECOMMEND,
         re.compile(r"(посоветуй|порекоменд|что посмотреть|похожие на|похожее на|топ[-\s]?\d)", re.I),
     ),
@@ -105,13 +117,16 @@ _RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 _SHOW_AFTER = re.compile(
     r"(?:добавь|отслеживай|следи за|подпишись на|хочу смотреть|похожие на|похожее на"
     r"|где смотреть|перестань следить за|удали сериал|убери сериал"
-    r"|что за сериал|что за шоу|что такое|расскажи (?:о|про|об)|о чём|о чем)\s+"
-    r"(?:сериал\s+)?(.{2,60})",
+    r"|что за сериал|что за шоу|что такое|расскажи (?:о|про|об)|о чём|о чем"
+    r"|где скачать|найди раздач\w*|раздач\w* для|скачать серию)\s+"
+    r"(?:для\s+)?(?:сериал\s+)?(.{2,60})",
     re.I,
 )
 # «2 сезон 5 серию» и «сезон 2, серия 5» — номера стоят с обеих сторон от слова.
 # Номера сезона бывают и двухзначные, и «номер года» — у ежедневных сериалов.
 _SIMILAR_RE = re.compile(r"похож", re.I)
+#: Код серии прямо в тексте: «S02E04», «s2e4». Точнее, чем разбор моделью.
+_EPISODE_CODE = re.compile(r"\bs(\d{1,4})e(\d{1,3})\b", re.I)
 #: «штук пять», «5 штук», «топ-3», «дай три» — просят разное число.
 _COUNT_RE = re.compile(
     r"(?:штук(?:ами|ах|ам)?|топ[-\s]?)\s*(\d{1,2})|(\d{1,2})\s*штук", re.I
@@ -139,15 +154,45 @@ class Intent:
 
 
 def parse(text: str, *, client: LLMClient | None = None) -> Intent:
-    """Сначала модель, при неудаче — правила. Порядок именно такой."""
+    """Сначала модель, при неудаче — правила. Порядок именно такой.
+
+    Но код серии, номер эпизода и «сколько штук» всегда берутся правилами, даже
+    когда интент от модели: модель на «найди раздачи для MobLand S02E04» отвечает
+    уверенно, но теряет `S02E04` (считает, что это часть названия). Правила на
+    таких деталях точнее, а потерянный код серии потом не восстановить — человек
+    получит раздачу соседней серии.
+    """
     if client is not None and client.configured:
         try:
             intent = _from_model(text, client)
             if intent.name != UNKNOWN and intent.confidence >= CONFIDENCE_FLOOR:
-                return intent
+                return _with_exact_details(text, intent)
         except LLMError:
             pass
     return rules(text)
+
+
+def _with_exact_details(text: str, intent: Intent) -> Intent:
+    """Подставить точные детали из текста поверх ответа модели."""
+    code = _EPISODE_CODE.search(text)
+    season, number = intent.season, intent.number
+    if code is not None:
+        season, number = int(code.group(1)), int(code.group(2))
+    if season is None:
+        season = _season(text)
+    if number is None:
+        number = _number(text)
+    limit = _count(text) or intent.limit
+    show = intent.show
+    if code is not None and show and code.group(0).lower() not in show.lower():
+        show = f"{show} {code.group(0)}"
+    return replace(
+        intent,
+        show=show,
+        season=season,
+        number=number,
+        limit=limit,
+    )
 
 
 def _from_model(text: str, client: LLMClient) -> Intent:

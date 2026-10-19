@@ -68,6 +68,15 @@ class Config:
     tvmaze_rate_limit: tuple[int, float] = DEFAULT_RATE_LIMIT
     notify_lookback_hours: float = 72.0
     notify_quiet_hours: tuple[int, int] | None = DEFAULT_QUIET_HOURS
+    #: Поиск раздач выключен по умолчанию: пакет ставится отдельно, и без него
+    #: сервис просто не ищет. Повторы — раз в `retry_hours` и не дольше
+    #: `retry_days` после выхода серии, потому что раздачи появляются с задержкой.
+    torrent_search_enabled: bool = False
+    torrent_retry_hours: float = 6.0
+    torrent_retry_days: float = 3.0
+    torrent_search_limit: int = 20
+    torrent_show_limit: int = 5
+    torrent_exclude_sources: str = "yts.mx,fitgirl-repacks.site"
     custom_sources_path: Path = Path("data/where_to_watch.json")
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -146,6 +155,12 @@ class Config:
             tvmaze_rate_limit=(rate_max, rate_window),
             notify_lookback_hours=_float(env, "NOTIFY_LOOKBACK_HOURS", 72.0),
             notify_quiet_hours=_quiet_hours(env.get("QUIET_HOURS")),
+            torrent_search_enabled=_bool(env, "TORRENT_SEARCH", False),
+            torrent_retry_hours=_float(env, "TORRENT_RETRY_HOURS", 6.0),
+            torrent_retry_days=_float(env, "TORRENT_RETRY_DAYS", 3.0),
+            torrent_search_limit=_int(env, "TORRENT_SEARCH_LIMIT", 20),
+            torrent_show_limit=_int(env, "TORRENT_SHOW_LIMIT", 5),
+            torrent_exclude_sources=env.get("TORRENT_EXCLUDE_SOURCES") or "yts.mx,fitgirl-repacks.site",
             telegram_bot_token=_opt(env, "TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=_opt(env, "TELEGRAM_CHAT_ID"),
             llm_base_url=_opt(env, "LLM_BASE_URL"),
@@ -210,6 +225,18 @@ def _float(env: Mapping[str, str], name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:
         raise ConfigError(f"{name} должен быть числом, получено {raw!r}") from exc
+
+
+def _bool(env: Mapping[str, str], name: str, default: bool) -> bool:
+    raw = env.get(name)
+    if raw is None or not raw.strip():
+        return default
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on", "да"}:
+        return True
+    if text in {"0", "false", "no", "off", "нет"}:
+        return False
+    raise ConfigError(f"{name} должен быть да или нет, получено {raw!r}")
 
 
 def _system_tz_name() -> str:

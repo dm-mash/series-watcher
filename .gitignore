@@ -6,3 +6,6 @@ __pycache__/
 data/
 *.db
 .env
+
+# Состояние веб-интерфейса torrent-search-mcp: сессии Telegram-парсинга.
+authorized_tokens.json
