@@ -56,16 +56,23 @@ def test_without_model_nothing_is_guessed():
 
 def test_pick_selects_from_candidates(sleeps):
     candidates = shows((11, "Dark"), (12, "Dark Matter"))
-    fake = FakeLLM(reply('{"id": 12, "confidence": 0.9}'))
+    fake = FakeLLM(reply("2"))
 
     chosen = pick_show("dark matter", candidates, llm=client(fake, sleeps))
 
     assert chosen is not None and chosen.title == "Dark Matter"
 
 
-def test_pick_declines_low_confidence(sleeps):
-    fake = FakeLLM(reply('{"id": 11, "confidence": 0.2}'))
+def test_pick_declines_when_unsure(sleeps):
+    """«Не уверен» — это не отказ отвечать, а сигнал спросить человека."""
+    fake = FakeLLM(reply("НЕ УВЕРЕН"))
     assert pick_show("что-то", shows((11, "Dark")), llm=client(fake, sleeps)) is None
+
+
+def test_pick_ignores_a_number_outside_the_list(sleeps):
+    """Модель не имеет права назвать вариант, которого в списке не было."""
+    fake = FakeLLM(reply("9"))
+    assert pick_show("dark", shows((11, "Dark")), llm=client(fake, sleeps)) is None
 
 
 def test_pick_accepts_no_match(sleeps):
@@ -138,3 +145,8 @@ def test_one_liner_without_summary_or_model(sleeps):
 def test_one_liner_drops_trailing_sentences(sleeps):
     fake = FakeLLM(reply("Драма про побег из бункера. В финале герой умирает."))
     assert one_liner("Silo", "текст", llm=client(fake, sleeps)) == "Драма про побег из бункера"
+
+
+def test_pick_works_without_a_model():
+    """Без модели выбор не делается — решение остаётся за человеком."""
+    assert pick_show("dark", shows((11, "Dark"), (12, "Dark Matter")), llm=None) is None

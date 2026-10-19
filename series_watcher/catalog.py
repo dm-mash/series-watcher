@@ -167,46 +167,53 @@ def _clean_title(text: str) -> str | None:
     return title
 
 
+PICK_PROMPT_TEXT = (
+    "Пользователь ищет сериал, а в списке несколько похожих по названию. "
+    "Выбери тот, который он имел в виду.\n"
+    "Ответь только номером строки из списка. Ничего больше не пиши.\n"
+    "Если сомневаешься или ни один не подходит — ответь одним словом: НЕ УВЕРЕН."
+)
+
+
+#: Размышляющие модели съедают бюджет на размышление: общего `LLM_MAX_TOKENS`
+#: на выбор из списка не хватало, и ответ обрывался.
+PICK_MAX_TOKENS = 2000
+
+
 def pick_show(
     description: str,
     candidates: Sequence[ShowRecord],
     *,
     llm: LLMClient | None,
-    floor: float = 0.6,
 ) -> ShowRecord | None:
-    """Выбрать сериал из выдачи поиска, когда запрос неоднозначный."""
+    """Выбрать сериал из выдачи, когда запрос неоднозначный.
+
+    `None` — модель не уверена: решение остаётся за человеком, и вызывающий
+    показывает варианты кнопками. Формат ответа — обычный текст, а не JSON:
+    принудительная схема у части моделей возвращает пустую генерацию, и выбор
+    то работал, то нет — в зависимости от того, повезло ли с ответом.
+    """
     client = _client(llm)
     if client is None or not candidates:
         return None
     listing = "\n".join(
-        f"{show.external_id}. {show.title} "
-        f"({', '.join(part for part in (show.kind, show.status, show.network) if part)})"
-        for show in candidates
+        f"{number}. {show.title} ({', '.join(part for part in (show.kind, show.status, show.network) if part)})"
+        for number, show in enumerate(candidates, start=1)
     )
-    try:
-        data = client.complete_json(
-            [
-                {"role": "system", "content": PICK_PROMPT},
-                {"role": "user", "content": f"Запрос: {description}\n\nКандидаты:\n{listing}"},
-            ],
-            PICK_SCHEMA,
-            name="pick",
-        )
-    except LLMError:
+    reply = client.complete(
+        [
+            {"role": "system", "content": PICK_PROMPT_TEXT},
+            {"role": "user", "content": f"Запрос: {description}\n\nВарианты:\n{listing}"},
+        ],
+        max_tokens=PICK_MAX_TOKENS,
+    )
+    line = reply.text.strip().splitlines()[0].strip() if reply.text.strip() else ""
+    if not line.isdigit():
         return None
-    if not isinstance(data, Mapping):
+    number = int(line)
+    if not 1 <= number <= len(candidates):
         return None
-    try:
-        confidence = float(data.get("confidence", 0.0))
-    except (TypeError, ValueError):
-        confidence = 0.0
-    chosen = data.get("id")
-    if chosen is None:
-        return None
-    if confidence < floor:
-        return None
-    key = str(chosen)
-    return next((show for show in candidates if show.external_id == key), None)
+    return candidates[number - 1]
 
 
 def short_summary(text: str | None, *, llm: LLMClient | None) -> str | None:

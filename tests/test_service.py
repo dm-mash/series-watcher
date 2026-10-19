@@ -192,7 +192,7 @@ def test_ambiguous_candidates_are_resolved_by_the_model(watcher, fake_tvmaze):
     )
     fake_tvmaze.add("/shows/12", show_payload(12, "Dark Matter"))
     fake_tvmaze.add("/shows/12/episodes", load_fixture("episodes"))
-    watcher.llm = llm_for(FakeLLM(reply('{"id": 12, "confidence": 0.9}')))
+    watcher.llm = llm_for(FakeLLM(reply("2")))
 
     result = watcher.add_show("dark knight")
 
@@ -208,7 +208,7 @@ def test_unsure_model_leaves_the_choice_to_the_user(watcher, fake_tvmaze):
             {"score": 0.5, "show": show_payload(12, "Dark Matter")},
         ],
     )
-    watcher.llm = llm_for(FakeLLM(reply('{"id": null, "confidence": 0.9}')))
+    watcher.llm = llm_for(FakeLLM(reply("НЕ УВЕРЕН")))
 
     result = watcher.add_show("dark knight")
 
