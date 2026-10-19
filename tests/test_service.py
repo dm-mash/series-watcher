@@ -9,7 +9,7 @@ import pytest
 from series_watcher.config import Config
 from series_watcher.db import Database
 from series_watcher.llm import LLMClient
-from series_watcher.nlu import Intent
+from series_watcher.nlu import Intent, rules
 from series_watcher.service import SeriesWatcher
 from series_watcher.schedule import TvMazeSchedule
 from series_watcher.tvmaze import TvMazeClient
@@ -172,7 +172,7 @@ def test_description_is_resolved_into_a_show(watcher, fake_tvmaze):
     """Пользователь описал сериал словами: поиск по подстроке не помогает."""
     fake_tvmaze.add("/search/shows?q=where people get their memories cut", [])
     watcher.llm = llm_for(
-        FakeLLM(reply('{"title": "Severance"}'), reply('{"id": 44933, "confidence": 0.95}'))
+        FakeLLM(reply("Severance"), reply('{"id": 44933, "confidence": 0.95}'))
     )
 
     result = watcher.add_show("where people get their memories cut")
@@ -257,3 +257,34 @@ def test_data_replies_keep_attribution(watcher):
 
     assert "Данные: TVmaze" in digest
     assert "Beyond the Gates" in digest
+
+
+def test_about_asks_by_description_when_name_finds_nothing(watcher, fake_tvmaze):
+    """«что за сериал, где людям режут память» — это описание, а не название.
+
+    Раньше такой вопрос всегда заканчивался «не нашёл», хотя описание разобрать
+    было можно: поиск по названию падал, и запасного прохода не было.
+    """
+    fake_tvmaze.add("/search/shows?q=где людям режут память", [])
+    fake_tvmaze.add(
+        "/search/shows?q=Westworld",
+        [{"score": 0.9, "show": dict(load_fixture("show"), id=1, name="Westworld")}],
+    )
+    fake_tvmaze.add("/shows/1", dict(load_fixture("show"), id=1, name="Westworld"))
+    watcher.llm = llm_for(FakeLLM(reply("Westworld")))
+
+    answer = watcher.handle(rules("что за сериал где людям режут память"))
+
+    assert "Westworld" in answer.text
+
+
+def test_llm_trouble_is_not_reported_as_not_found(watcher, fake_tvmaze):
+    """Сбой модели и отсутствие сериала — разные вещи, и говорить надо что есть."""
+    from series_watcher.llm import LLMTruncated
+
+    fake_tvmaze.add("/search/shows?q=где людям режут память", [])
+    watcher.llm = llm_for(FakeLLM(400))
+
+    answer = watcher.handle(rules("что за сериал где людям режут память"))
+
+    assert "не нашёл" not in answer.text

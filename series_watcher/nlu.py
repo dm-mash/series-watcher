@@ -53,9 +53,17 @@ SCHEMA: Mapping[str, Any] = {
         "limit": {
             "type": ["integer", "null"],
             "description": "сколько сериалов просят: «штук 5», «топ-3»",
+        },        "mood": {
+            "type": ["string", "null"],
+            "description": "пожелание словами: «лёгкое на вечер»; пустая строка, если пожелания нет",
+        },        "strategy": {
+            "type": ["string", "null"],
+            "description": "null, если не сказано; иначе model или crew",
         },
+
+
     },
-    "required": ["intent", "confidence", "show", "season", "number", "limit"],
+    "required": ["intent", "confidence", "show", "season", "number", "limit", "mood", "strategy"],
     "additionalProperties": False,
 }
 
@@ -65,7 +73,7 @@ SYSTEM_PROMPT = (
     "where_to_watch (где смотреть), mark_watched (отметить просмотренным), "
     "unsubscribe (перестать отслеживать), digest (сводка по расписанию на "
     "несколько дней), list (показать список отслеживаемых сериалов и когда "
-    "выходит следующий эпизод), recommend (порекомендовать сериал), "
+    "выходит следующий эпизод), recommend (порекомендовать сериал; если человек описал, чего хочет — «лёгкое на вечер» — положи это в mood), "
     "download (найти раздачу серии: «где скачать S02E05» — название и код серии "
     "кладите в show), "
     "unknown (не понял).\n"
@@ -146,6 +154,10 @@ class Intent:
     season: int | None = None
     number: int | None = None
     limit: int | None = None
+    #: Пожелание словами: описали, чего хотят, — подбор уходит модели.
+    mood: str | None = None
+    #: Чем подбирать, если назвали прямо: «посоветуй моделью».
+    strategy: str | None = None
     reason: str = ""
 
     @property
@@ -183,15 +195,25 @@ def _with_exact_details(text: str, intent: Intent) -> Intent:
     if number is None:
         number = _number(text)
     limit = _count(text) or intent.limit
+    # Названное словом — факт: «посоветуй моделью» модель в шутку не теряет.
+    # Пожелание, наоборот, лучше разбирает модель, правила — только запасной путь.
+    strategy = _named_strategy(text) or intent.strategy
+    mood = intent.mood or _mood(text)
     show = intent.show
     if code is not None and show and code.group(0).lower() not in show.lower():
         show = f"{show} {code.group(0)}"
+    if show is None:
+        # Сначала фраза целиком: описание полезнее усечённой головы, а
+        # название из реплики («добавь Severance») от полного текста не страдает.
+        show = _plain_query(text, intent.name) or _show_after(text, intent.name)
     return replace(
         intent,
         show=show,
         season=season,
         number=number,
         limit=limit,
+        mood=mood,
+        strategy=strategy,
     )
 
 
@@ -225,8 +247,33 @@ def _intent_from_payload(data: Any, *, reason: str) -> Intent:
         season=_as_int(data.get("season")),
         number=_as_int(data.get("number")),
         limit=_as_int(data.get("limit")),
+        mood=_as_text(data.get("mood")),
+        strategy=_as_strategy(data.get("strategy")),
         reason=reason,
     )
+
+
+#: Прямой выбор подбора словами: «посоветуй моделью», «через нейросеть».
+_STRATEGY_MODEL = re.compile(
+    r"\b(?:модел\w*|нейросет\w*|нейронк\w*|ии)\b", re.I
+)
+_STRATEGY_CREW = re.compile(
+    r"\b(?:по авторству|по жанрам|как раньше|обычным подбором)\b", re.I
+)
+_STRATEGY_WORDS = re.compile(
+    r"\b(?:модел\w*|нейросет\w*|нейронк\w*|ии|по авторству|по жанрам|как раньше|"
+    r"обычным подбором)\b",
+    re.I,
+)
+
+
+def _named_strategy(phrase: str) -> str | None:
+    """`model` или `crew`, если человек назвал способ прямо; иначе пусто."""
+    if _STRATEGY_MODEL.search(phrase):
+        return "model"
+    if _STRATEGY_CREW.search(phrase):
+        return "crew"
+    return None
 
 
 def rules(text: str) -> Intent:
@@ -247,6 +294,8 @@ def rules(text: str) -> Intent:
                 season=_season(phrase),
                 number=_number(phrase),
                 limit=_count(phrase),
+                mood=_mood(phrase),
+                strategy=_named_strategy(phrase),
                 reason="rules",
             )
     return Intent(name=UNKNOWN, confidence=0.0, reason="нет маркеров")
@@ -285,6 +334,90 @@ def _count(phrase: str) -> int | None:
     if value is None or not 1 <= value <= 20:
         return None
     return value
+
+
+#: Слова-пустышки: «посоветуй что-нибудь» — это не пожелание, а болтовня.
+_FILLER = (
+    # Предлоги остаются от «через нейросеть»: смысл несут слова стратегии.
+    "через",
+    "по",
+    "с",
+    "помощью",
+    "что-нибудь",
+    "что нибудь",
+    "чтото-нибудь",
+    "что-то",
+    "что-то-нибудь",
+    "сериал",
+    "сериалы",
+    "что-то",
+    "да",
+)
+
+_MOOD_VERB = re.compile(
+    r"(посоветуй|посоветуйте|подбери|порекомендуй)\s+(?!похож)(.*)$", re.I
+)
+
+
+def _mood(phrase: str) -> str | None:
+    """Пожелание словами, сказанное без помощи модели.
+
+    «посоветуй что-нибудь лёгкое на вечер» — пожелание есть, «посоветуй
+    что-нибудь» — нет, а «посоветуй похожее на X» это не пожелание, а указание
+    на сериал: его разбирает show, а не мы.
+    """
+    match = _MOOD_VERB.search(phrase)
+    if match is None:
+        return None
+    tail = match.group(2)
+    # «посоветуй штук 5» — это про количество, а не про настроение.
+    tail = _STRATEGY_WORDS.sub(" ", _COUNT_RE.sub(" ", tail))
+    words = [word for word in re.findall(r"[\w-]+", tail, re.UNICODE) if word]
+    while words and words[0].lower() in _FILLER:
+        words.pop(0)
+    if not words:
+        return None
+    if words[0].lower().startswith("похож"):
+        return None
+    if len(words) > 8:
+        return None
+    return " ".join(words)
+
+
+#: Намерения, где человек точно что-то описывает, и пустой ответ модели —
+#: не повод спрашивать «какой сериал?».
+_QUERY_INTENTS = (ADD_SHOW, WHERE_TO_WATCH, ABOUT, DOWNLOAD)
+
+_LEAD_VERB = re.compile(
+    r"^(?:ну\s+)?(?:дай|добавь|добавьте|найди|найдите|найди-нибудь|ищи|ищите|посоветуй|"
+    r"порекомендуй|подскажи|подбери|расскажи|что за|что такое|где смотреть|где найти|"
+    r"где скачать|найди раздач\w*|раздач\w*)\b",
+    re.I,
+)
+
+
+def _plain_query(text: str, name: str) -> str | None:
+    """Вся фраза без ведущего глагола — когда модель не заполнила слот.
+
+    Для описаний это единственное, что у нас есть: «добавь сериал про офис, где
+    людей разделяют на части» — описание целиком, а не его усечённая голова.
+    """
+    if name not in _QUERY_INTENTS:
+        return None
+    body = _LEAD_VERB.sub("", text.strip(), count=1).strip(" ,.:;—-")
+    body = re.sub(r"^(?:что-нибудь|что нибудь|сериал|сериалы|фильм|шоу)\b\s*", "", body, flags=re.I)
+    return body or None
+
+
+def _as_strategy(value: Any) -> str | None:
+    """Стратегия из ответа модели: только те две, что есть в реестре."""
+    name = value.strip().lower() if isinstance(value, str) else ""
+    return name if name in ("crew", "model") else None
+
+
+def _as_text(value: Any) -> str | None:
+    """Строка из ответа модели: пустая значит «не названо»."""
+    return value.strip() or None if isinstance(value, str) else None
 
 
 def _first_group(match: re.Match[str] | None) -> int | None:

@@ -12,7 +12,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
-from .catalog import explain, one_liner, pick_show, short_summary, title_from_description
+from .catalog import describe_title, explain, one_liner, pick_show, short_summary
+from .llm import LLMError
 from .config import Config
 from .db import (
     NOT_INTERESTED,
@@ -25,8 +26,7 @@ from .db import (
     tracked_shows,
     utcnow,
 )
-from .strategies import Recommendation, Request, get as get_strategy
-from .strategies.crew import CrewStrategy
+from .strategies import Recommendation, Request, StrategyError, get as get_strategy
 from .nlu import (
     ABOUT,
     ADD_SHOW,
@@ -42,6 +42,8 @@ from .nlu import (
     buttons_for,
 )
 from .finders import EpisodeFinder, FinderError, FinderUnavailable, TorrentHit, prune_magnet
+from urllib.parse import quote, unquote
+
 from .notify import Notifier, esc, footer, footer_credit
 from .sources import SourceAnswer, SourceSet
 from .models import ShowRecord
@@ -224,7 +226,7 @@ class SeriesWatcher:
         """Поиск провалился: пробуем понять описание и искать уже по названию."""
         if needle not in query.casefold():
             return AddResult(status="not_found", message=f"По запросу «{query}» ничего нет")
-        title = title_from_description(query, llm=self.llm)  # type: ignore[arg-type]
+        title = describe_title(query, llm=self.llm)  # type: ignore[arg-type]
         if not title:
             hint = ""
             if not getattr(self.llm, "configured", False):
@@ -689,7 +691,10 @@ class SeriesWatcher:
     def _answer_add_show(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if not intent.show:
             return Reply(text=plain(["Какой сериал добавить?"]))
-        result = self.add_show(intent.show)
+        try:
+            result = self.add_show(intent.show)
+        except LLMError as exc:
+            return Reply(text=plain([f"Модель не ответила: {exc}", "Попробуйте ещё раз."]))
         if result.status == "not_found":
             return Reply(text=footer([f"По запросу «{intent.show}» ничего нет."]))
         if result.status == "needs_choice":
@@ -741,8 +746,13 @@ class SeriesWatcher:
         min_rating: float | None = None,
         focus: Show | None = None,
         strategy: str | None = None,
+        mood: str | None = None,
     ) -> list[Recommendation]:
-        """Подбор по всему списку или по названному сериалу."""
+        """Подбор по всему списку или по названному сериалу.
+
+        `mood` — пожелание словами: его понимает только модельная стратегия,
+        правила его проигнорируют.
+        """
         if not self.db.list_shows():
             return []
         request = Request(
@@ -751,17 +761,18 @@ class SeriesWatcher:
             source=self.source,
             limit=limit,
             focus=focus,
+            llm=self.llm,
+            mood=mood,
             **({"min_rating": min_rating} if min_rating is not None else {}),
         )
         return list(get_strategy(strategy).candidates(request))
 
     def cold_start(self, *, limit: int = 3, strategy: str | None = None) -> list[Recommendation]:
         """Первый запуск: пустого списка не должно быть причиной молчать."""
-        request = Request(config=self.config, db=self.db, source=self.source, limit=limit)
-        chosen = get_strategy(strategy)
-        if isinstance(chosen, CrewStrategy):
-            return list(chosen.cold_start(request, limit=limit))
-        return []
+        request = Request(
+            config=self.config, db=self.db, source=self.source, limit=limit, llm=self.llm
+        )
+        return list(get_strategy(strategy).cold_start(request, limit=limit))
 
     def reject(self, external_id: str | int, kind: str) -> bool:
         """Отказ от кандидата: он ещё не отслеживается, поэтому ищем по имени."""
@@ -785,6 +796,26 @@ class SeriesWatcher:
             )
         lines.append("Или напишите название сериала — добавлю.")
         return Reply(text=footer(lines), buttons=tuple(buttons))
+
+    def repick_by_callback(self, payload: str) -> Reply:
+        """Кнопка «подобрать по-другому»: тот же вопрос, другой способ.
+
+        Пожелание и ориентир приезжают вместе с кнопкой — иначе переключение
+        отвечало бы на другой вопрос, а не на тот, который задали.
+        """
+        parts = payload.removeprefix("pick ").split("|")
+        if len(parts) != 4 or parts[0] not in {"crew", "model"}:
+            return Reply(text=plain(["Кнопка устарела, напишите запрос текстом."]))
+        strategy, mood, show_name, limit = parts
+        intent = Intent(
+            name=RECOMMEND,
+            confidence=1.0,
+            show=unquote(show_name) or None,
+            limit=int(limit) if limit.isdigit() else None,
+            mood=unquote(mood) or None,
+            strategy=strategy,
+        )
+        return self._answer_recommend(intent)
 
     def add_by_callback(self, payload: str) -> Reply:
         """Кнопки: `add <id>` добавляет, `reject <id>` — отказ от рекомендации."""
@@ -881,12 +912,24 @@ class SeriesWatcher:
             return self.cold_start_reply()
         focus = self._focus_show(intent.show)
         asked = intent.limit or DEFAULT_RECOMMEND_LIMIT
-        items = self.recommend(limit=asked, focus=focus)
+        mood = intent.mood
+        # Порядок: названная стратегия важнее пожелания. «посоветуй штук 5
+        # моделью» — это модель, а не «просто посоветуй». Пожелание словами
+        # тоже уводит в модель: правила «лёгкое на вечер» не понимают.
+        chosen = intent.strategy or ("model" if mood else None)
+        try:
+            items = self.recommend(limit=asked, focus=focus, mood=mood, strategy=chosen)
+        except StrategyError as exc:
+            return Reply(text=plain([str(exc), "Подбор по авторству и жанрам: «посоветуй»."]))
         if focus is not None and not items:
             return Reply(text=plain([f"Похожего на «{focus.name}» не нашлось."]))
         if not items:
             return Reply(text=plain(["Подходящих сериалов не нашлось."]))
         title = f"Похожее на «{esc(focus.name)}»:" if focus is not None else "Похожее на ваш список:"
+        if mood and chosen != "model":
+            # Пожелание — это язык модели. Переключившись на правила, человек
+            # получит подбор по авторству, и молчать об этом было бы враньём.
+            title += f" <i>(пожелание «{esc(mood)}» правила не учитывают)</i>"
         if len(items) < asked:
             title += f" <i>(просили {asked}, нашлось {len(items)})</i>"
         title = f"<b>{title}</b>"
@@ -906,16 +949,53 @@ class SeriesWatcher:
             buttons.append(
                 ((f"Не интересно: {item.show.title}", f"reject {item.show.external_id}"),)
             )
+        switch = self._strategy_hint(chosen, focus, intent)
+        if switch is not None:
+            buttons.append((switch,))
         return Reply(text=footer_credit([title, ""] + lines), buttons=tuple(buttons), html=True)
+
+    @staticmethod
+    @staticmethod
+    def _strategy_hint(chosen: str | None, focus, intent: Intent) -> tuple[str, str] | None:
+        """Кнопка переключения подбора — с сохранением всего вопроса.
+
+        Контекст едет в самой кнопке, а не в тексте реплики: фразой «посоветуй
+        по авторству» терялись пожелание и количество.
+
+        При заданном пожелании кнопки нет вовсе: правила пожелание не понимают,
+        и переключение увело бы человека в заведомо другой ответ. Лучше не
+        предлагать, а объяснить, если спросит прямо.
+        """
+        if intent.mood and chosen == "model":
+            return None
+        tail = f" на «{focus.name}»" if focus is not None else ""
+        target = "crew" if chosen == "model" else "model"
+        label = "Подобрать по авторству" if target == "crew" else "Подобрать моделью"
+        payload = "|".join(
+            [
+                target,
+                quote(intent.mood or "", safe=""),
+                quote(focus.name if focus is not None else "", safe=""),
+                str(intent.limit or ""),
+            ]
+        )
+        return (f"{label}{tail}", f"pick {payload}")
 
     def _answer_about(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         """«Что за сериал X»: карточка из каталога, а не из нашего списка."""
         if not intent.show:
             return Reply(text=plain(["О каком сериале рассказать?"]))
         tracked = self.db.find_shows(intent.show)
-        external_id = tracked[0].key.external_id if tracked else self._search_id(intent.show)
+        try:
+            external_id = tracked[0].key.external_id if tracked else self._search_id(intent.show)
+        except LLMError as exc:
+            return Reply(text=plain([f"Модель не ответила: {exc}", "Попробуйте ещё раз."]))
         if external_id is None:
-            return Reply(text=plain([f"«{intent.show}» не нашёл ни в списке, ни в каталоге."]))
+            return Reply(
+                text=plain(
+                    [f"«{intent.show}» не нашёл ни в списке, ни в каталоге — даже по описанию."]
+                )
+            )
         payload = self.source.get_show(external_id)
 
         lines = [f"{payload.title} ({', '.join(payload.genres) or payload.kind or 'сериал'})"]
@@ -947,7 +1027,22 @@ class SeriesWatcher:
         return Reply(text=footer(lines), buttons=buttons)
 
     def _search_id(self, query: str) -> str | None:
-        """Каталог TVmaze: точное совпадение по названию, иначе лучшее из выдачи."""
+        """Каталог источника: сначала как название, потом как описание.
+
+        Человек спрашивает «что за сериал, где людям режут память» — и это
+        описание, а не название. Без второй попытки такой вопрос всегда
+        заканчивался бы «не нашёл».
+        """
+        found = self._search_by_name(query)
+        if found:
+            return found
+        title = describe_title(query, llm=self.llm)  # type: ignore[arg-type]
+        if not title or title.upper().startswith("НЕТ") or normalize_name(title) == normalize_name(query):
+            return None
+        return self._search_by_name(title)
+
+    def _search_by_name(self, query: str) -> str | None:
+        """Точное совпадение по названию, иначе лучшее из выдачи."""
         try:
             found = list(self.source.search(query))
         except ScheduleError:

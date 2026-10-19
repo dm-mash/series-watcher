@@ -7,6 +7,7 @@ import pytest
 from series_watcher.config import Config
 from series_watcher.llm import LLMClient
 from series_watcher.nlu import (
+    _plain_query,
     ADD_SHOW,
     CONFIDENCE_FLOOR,
     DIGEST,
@@ -245,3 +246,44 @@ def test_download_intent_keeps_the_show_name():
 def test_download_phrase_keeps_the_show_and_the_code(phrase, expected):
     """Род. падеж «раздачи для» — тоже раздачи, а «для» не часть названия."""
     assert rules(phrase).show == expected
+
+
+def test_confident_model_cannot_lose_the_named_strategy(sleeps):
+    """«посоветуй моделью» — слово в тексте, а не мнение модели о нём."""
+    fake = FakeLLM(intent_json(intent=RECOMMEND, confidence=0.99))
+    intent = parse("посоветуй моделью", client=client(fake, sleeps))
+
+    assert intent.strategy == "model"
+
+
+def test_count_is_not_read_as_a_mood(sleeps):
+    """«штук 5» — про количество; уводить подбор в модель на этом нельзя."""
+    fake = FakeLLM(intent_json(intent=RECOMMEND, confidence=0.95))
+    intent = parse("посоветуй штук 5", client=client(fake, sleeps))
+
+    assert intent.limit == 5
+    assert intent.mood is None
+
+
+def test_empty_model_slot_does_not_throw_away_the_text(sleeps):
+    """Пустой слот модели — не повод спросить «какой сериал?».
+
+    Человек написал описание; выбрасывать его и требовать названия — значит
+    заставить его повторить то же самое другими словами.
+    """
+    fake = FakeLLM(intent_json(intent=ADD_SHOW, confidence=0.9, show=""))
+    intent = parse("добавь сериал про офис, где людей разделяют на части", client=client(fake, sleeps))
+
+    assert intent.name == ADD_SHOW
+    assert intent.show == "про офис, где людей разделяют на части"
+
+
+def test_plain_title_survives_the_fallback():
+    assert rules("добавь Severance").show == "Severance"
+
+
+def test_fallback_does_not_invent_a_query_for_list_intents():
+    """У «что нового» и «дайджеста» запроса нет, и придумывать его нельзя."""
+    assert _plain_query("что нового", WHAT_NEW) is None
+    assert _plain_query("дайджест", DIGEST) is None
+    assert _plain_query("посоветуй", RECOMMEND) is None

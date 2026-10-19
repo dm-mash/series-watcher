@@ -94,8 +94,9 @@ class Bot:
     ) -> HandledMessage | None:
         """Нажатие кнопки — это реплика, заранее написанная за пользователя.
 
-        Две формы: `add <id>` добавляет сериал по кнопке, всё остальное — обычная
-        фраза, которая идёт через тот же разбор, что и набранный текст.
+        Формы три: `add <id>` добавляет сериал, `reject <id>` отказывается,
+        `pick …` повторяет тот же вопрос другим способом. Всё остальное — обычная
+        фраза через тот же разбор, что и набранный текст.
         """
         data = callback.get("data")
         message = callback.get("message") or {}
@@ -108,6 +109,8 @@ class Bot:
             reply = Reply(text="Кнопка без команды, напишите текстом.")
         elif data.startswith(("add ", "reject ")):
             reply = self._watcher.add_by_callback(data)
+        elif data.startswith("pick "):
+            reply = self._watcher.repick_by_callback(data)
         else:
             reply = self.answer(data)
         self._api.send_message(chat_id, reply.text, buttons=reply.buttons, html=reply.html)

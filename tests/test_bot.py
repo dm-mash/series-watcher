@@ -22,7 +22,7 @@ from conftest import FakeTelegram, load_fixture, pin_schedule
 from test_check import NOW
 from test_recommend import person_credits
 from test_nlu import intent_json
-from test_llm import FakeLLM
+from test_llm import FakeLLM, reply
 
 
 class FakeTelegramApi(TelegramApi):
@@ -82,6 +82,9 @@ def make_bot(watcher, updates, *, llm_fake: FakeLLM | None = None, sleeps=None, 
             environ={"LLM_BASE_URL": "https://llm.example/v1", "LLM_MODEL": "model-1"},
         )
         llm = LLMClient(config, transport=llm_fake.transport(), sleep=(sleeps or []).append)
+        # Как в бою: клиент достаётся и разговорному слою, и сервису — стратегии
+        # нужна модель из watcher, а не из бота.
+        watcher.llm = llm
     return Bot(watcher.config, watcher, api, llm=llm), api
 
 
@@ -462,7 +465,11 @@ def test_recommendation_has_track_and_reject_buttons(parts, fake_tvmaze, frozen_
     # Ряд из одной кнопки — это `((подпись, callback),)`: иначе Telegram
     # получает лишнюю кнопку с подписью вместо callback.
     assert all(len(row) == 1 for row in buttons)
-    assert [data.split()[0] for data in callbacks] == ["add", "reject"] * (len(buttons) // 2)
+    assert [data.split()[0] for data in callbacks[:-1]] == ["add", "reject"] * (
+        len(buttons[:-1]) // 2
+    )
+    # Последняя кнопка переключает подбор и несёт вопрос целиком.
+    assert callbacks[-1].startswith("pick model|")
     labels = [label for row in buttons for label, _ in row]
     assert any(label.startswith("Не интересно") for label in labels)
     assert any(label.startswith("Отслеживать") for label in labels)
@@ -602,3 +609,80 @@ def test_html_is_escaped_in_buttons_too():
     from series_watcher.notify import esc
 
     assert esc('say "hi" & <bye>') == 'say "hi" &amp; &lt;bye&gt;'
+
+
+def test_strategy_can_be_named_in_the_phrase(parts, fake_tvmaze):
+    """«посоветуй моделью» и «посоветуй по авторству» выбирают способ подбора."""
+    from series_watcher.nlu import rules
+
+    assert rules("посоветуй моделью").strategy == "model"
+    assert rules("посоветуй через нейросеть").strategy == "model"
+    assert rules("посоветуй по авторству").strategy == "crew"
+    assert rules("посоветуй моделью похожее на slow horses").mood is None
+
+
+def test_a_count_is_not_a_mood(parts):
+    """«штук 5» — это про количество: уводить подбор в модель нельзя."""
+    from series_watcher.nlu import rules
+
+    intent = rules("посоветуй штук 5")
+    assert (intent.limit, intent.mood, intent.strategy) == (5, None, None)
+
+
+def test_switch_button_carries_the_question(parts, fake_tvmaze, frozen_now):
+    """Кнопка «по-другому» несёт весь вопрос, а не только способ.
+
+    Фразой «посоветуй по авторству» вопрос терялся: человек нажимал «по-другому»
+    и получал общий подбор вместо «того же, но иначе».
+    """
+    watcher, fake, _ = parts
+    fake.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    pin_schedule(fake)
+
+    bot, api = make_bot(watcher, [text_update("посоветуй штук 3")])
+    bot.poll_once()
+    payload = api.sent[0]["buttons"][-1][0][1]
+
+    assert payload.startswith("pick model|")
+    strategy, mood, show_name, limit = payload[len("pick ") :].split("|")
+    assert strategy == "model"
+    assert limit == "3"
+    assert mood == "" and show_name == ""
+
+
+def test_repick_button_answers_the_same_question(parts, fake_tvmaze, frozen_now):
+    """Нажатие переключает способ и не теряет пожелание и количество."""
+    watcher, fake, _ = parts
+    fake.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    pin_schedule(fake)
+
+    bot, api = make_bot(watcher, [text_update("посоветуй штук 3")])
+    bot.poll_once()
+    payload = api.sent[0]["buttons"][-1][0][1]
+
+    fake_llm = FakeLLM(
+        reply('{"picks": [{"id": 1, "why": "продолжает то, что вы смотрите"}]}')
+    )
+    bot, api = make_bot(watcher, [callback_update(payload)], llm_fake=fake_llm)
+    bot.poll_once()
+
+    # Ответ модели виден по промпту: вопрос дошёл до модели, а не ушёл в правила.
+
+    prompt = " ".join(
+        message["content"] for message in fake_llm.requests[0]["messages"]
+    )
+    assert "Выбери 3" in prompt
+
+
+def test_crew_switch_says_it_ignores_the_mood(parts, fake_tvmaze, frozen_now):
+    """Пожелание — язык модели. Переключившись на правила, надо об этом сказать."""
+    watcher, fake, _ = parts
+    fake.add("/shows/44933/crew", load_fixture("crew_show"))
+    fake.add("/people/169453/crewcredits", load_fixture("crew_creator"))
+    pin_schedule(fake)
+
+    reply = watcher.repick_by_callback("pick crew|комедийное||")
+
+    assert "правила не учитывают" in reply.text

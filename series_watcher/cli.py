@@ -19,6 +19,7 @@ from .sources.custom import CustomSource
 from .schedule import TvMazeSchedule
 from .finders import TorrentSearchFinder
 from .notify import as_text
+from .strategies import StrategyError
 from .strategies import names as strategy_names
 from .tvmaze import TvMazeClient, TvMazeError
 
@@ -91,6 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=strategy_names(),
         default="crew",
         help="чем подбирать (по умолчанию crew — по авторству и жанрам)",
+    )
+    recommend.add_argument(
+        "--mood",
+        help="пожелание словами, например «что-то лёгкое на вечер»; понимает --strategy model",
     )
     recommend.add_argument(
         "--reject", type=int, metavar="ID", help="отказаться от сериала с таким id TVmaze"
@@ -413,7 +418,11 @@ def _cmd_seed(watcher: SeriesWatcher, args: argparse.Namespace, out: TextIO) -> 
             print(f"  {item.show.name}", file=out)
         return EXIT_OK
 
-    items = watcher.cold_start(limit=args.limit, strategy=args.strategy)
+    try:
+        items = watcher.cold_start(limit=args.limit, strategy=args.strategy)
+    except StrategyError as exc:
+        print(f"Не получилось: {exc}", file=err)
+        return EXIT_ERROR
     if not items:
         print("В расписании ничего подходящего не нашлось. Добавьте сериал по названию:", file=out)
         print("  series-watcher add «Название»", file=out)
@@ -464,9 +473,17 @@ def _cmd_recommend(watcher: SeriesWatcher, config: Config, args: argparse.Namesp
             return EXIT_ERROR
         focus = found[0]
 
-    items = watcher.recommend(
-        limit=args.limit, min_rating=args.min_rating, focus=focus, strategy=args.strategy
-    )
+    try:
+        items = watcher.recommend(
+            limit=args.limit,
+            min_rating=args.min_rating,
+            focus=focus,
+            strategy=args.strategy,
+            mood=args.mood,
+        )
+    except StrategyError as exc:
+        print(f"Не получилось: {exc}", file=err)
+        return EXIT_ERROR
     header = f"Похожее на «{focus.name}»" if focus is not None else "Похожее на ваш список"
     if not items:
         print("Подходящих сериалов не нашлось.", file=out)
