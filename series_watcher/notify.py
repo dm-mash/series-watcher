@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -31,9 +33,52 @@ class SendResult:
     detail: str = ""
 
 
+def esc(text: object) -> str:
+    """Экранирование для HTML-разметки Telegram.
+
+    Всё, что пришло извне — имена сериалов, названия раздач, сводки — обязано
+    пройти через это: иначе один `&` в названии ломает всё сообщение.
+    """
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+_TAG = re.compile(r"</?(?:b|i|code|s|u)>")
+
+
+def as_text(html: str) -> str:
+    """Разметка → plain text: так тот же ответ читается в терминале.
+
+    Теги снимаются, ссылки остаются: в терминале `magnet:?xt=…` полезнее слова
+    «magnet», а нажимать по ней всё равно нельзя.
+    """
+    return _TAG.sub("", html)
+
+
 def footer(extra: Sequence[str] = ()) -> str:
     """Подпись с атрибуцией: без неё ответ бота нарушает условия TVmaze."""
     return "\n".join([*extra, TVMAZE_CREDIT])
+
+
+def credit() -> str:
+    """Атрибуция помельче: курсивом и вплотную к последней строке.
+
+    Подпись обязательна, но она не должна спорить с ответом: раньше она стояла
+    отдельным абзацем и читалась как ещё один пункт списка.
+    """
+    return f"\n<i>{TVMAZE_CREDIT}</i>"
+
+
+def footer_credit(extra: Sequence[str] = ()) -> str:
+    """Ответ с атрибуцией — строкой помельче, вплотную к последней строке."""
+    body = [line for line in extra if line]
+    if not body:
+        return TVMAZE_CREDIT
+    return "\n".join([*body, credit()])
 
 
 class Notifier:
@@ -91,23 +136,25 @@ class Notifier:
         now = moment or utcnow()
         return in_quiet_hours(now.astimezone(self._config.tz).hour, self._config.notify_quiet_hours)
 
-    def send(self, text: str) -> SendResult:
+    def send(self, text: str, *, html: bool = False) -> SendResult:
         """Отправить текст. Без токена или чата — отказ, а не исключение."""
         if not self.configured:
             return SendResult(sent=False, detail="нет TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID")
         try:
             TelegramApi(self._config, self._client, token=self._token).send_message(
-                self._chat, text
+                self._chat, text, html=html
             )
         except (NotifyError, TvMazeError) as exc:
             return SendResult(sent=False, detail=str(exc))
         return SendResult(sent=True)
 
-    def send_episode(self, episode_id: int, text: str, *, kind: str = "new_episode") -> SendResult:
+    def send_episode(
+        self, episode_id: int, text: str, *, kind: str = "new_episode", html: bool = False
+    ) -> SendResult:
         """Отправить и только потом отметить: иначе эпизод потерялся бы."""
         if self._db.is_sent(episode_id, self.channel, kind):
             return SendResult(sent=False, detail="уже отправлено")
-        result = self.send(text)
+        result = self.send(text, html=html)
         if result.sent:
             self._db.mark_sent(episode_id, self.channel, kind)
         return result
@@ -126,9 +173,19 @@ class TelegramApi:
         return self._token
 
     def send_message(
-        self, chat_id: Any, text: str, *, buttons: Sequence[Sequence[str]] = ()
+        self,
+        chat_id: Any,
+        text: str,
+        *,
+        buttons: Sequence[Sequence[str]] = (),
+        html: bool = False,
     ) -> Mapping[str, Any]:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
+        if html:
+            # Разметка приходит из наших же строк, всё, что от API, экранировано
+            # заранее. HTML, а не Markdown: там нужно бегать по `_` и `*` в именах
+            # файлов раздач, а здесь — только по трём символам.
+            payload["parse_mode"] = "HTML"
         keyboard = _keyboard(buttons)
         if keyboard:
             payload["reply_markup"] = {"inline_keyboard": keyboard}

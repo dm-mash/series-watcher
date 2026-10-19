@@ -80,7 +80,7 @@ class Bot:
             return None
         self._remember_chat(chat.get("id"))
         reply = self.answer(text)
-        self._api.send_message(chat.get("id"), reply.text, buttons=reply.buttons)
+        self._api.send_message(chat.get("id"), reply.text, buttons=reply.buttons, html=reply.html)
         return HandledMessage(
             update_id=int(update.get("update_id") or 0),
             chat_id=chat.get("id"),
@@ -110,7 +110,7 @@ class Bot:
             reply = self._watcher.add_by_callback(data)
         else:
             reply = self.answer(data)
-        self._api.send_message(chat_id, reply.text, buttons=reply.buttons)
+        self._api.send_message(chat_id, reply.text, buttons=reply.buttons, html=reply.html)
         return HandledMessage(
             update_id=int(update.get("update_id") or 0),
             chat_id=chat_id,

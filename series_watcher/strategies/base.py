@@ -26,11 +26,22 @@ class Recommendation:
 
     def line(self) -> str:
         parts = [self.show.title]
+        if detail := self.line_detail():
+            parts.append(detail)
+        return " ".join(parts)
+
+    def line_detail(self) -> str:
+        """Факты без названия: жанры и рейтинг.
+
+        Отдельно от `line`, потому что в разметке название идёт жирным, а факты —
+        моноширинным. Склеивать их в одну строку нельзя.
+        """
+        parts = []
         if self.show.genres:
-            parts.append(f"({', '.join(self.show.genres[:3])})")
+            parts.append(f"{', '.join(self.show.genres[:3])}")
         if self.show.rating is not None:
             parts.append(f"рейтинг {self.show.rating}")
-        return " ".join(parts)
+        return " · ".join(parts)
 
 
 @dataclass(frozen=True)

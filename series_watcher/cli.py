@@ -17,6 +17,8 @@ from .service import AddResult, SeriesWatcher
 from .sources import SourceSet
 from .sources.custom import CustomSource
 from .schedule import TvMazeSchedule
+from .finders import TorrentSearchFinder
+from .notify import as_text
 from .strategies import names as strategy_names
 from .tvmaze import TvMazeClient, TvMazeError
 
@@ -67,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     where.add_argument("--url", help="ссылка, куда смотреть")
     where.add_argument("--provider", default="ссылка", help="название сервиса (по умолчанию «ссылка»)")
     where.add_argument("--kind", help="тип: подписка, бесплатно, в аренду")
+
+    torrents = sub.add_parser("torrents", help="найти раздачи для уже вышедших серий")
+    torrents.add_argument(
+        "--force", action="store_true", help="искать, даже если недавно уже искали"
+    )
+    torrents.add_argument("--dry-run", action="store_true", help="показать, что было бы отправлено")
 
     seed = sub.add_parser("seed", help="показать, с чего начать, когда список пуст")
     seed.add_argument("--limit", type=int, default=3, help="сколько предложить (по умолчанию 3)")
@@ -135,8 +143,17 @@ def main(
     sources = SourceSet([CustomSource(config.custom_sources_path)])
     source = TvMazeSchedule(tvmaze)
     llm = LLMClient(config, transport=transport)
+    finder = TorrentSearchFinder(
+        limit=config.torrent_search_limit, exclude_sources=config.torrent_exclude_sources
+    )
     watcher = SeriesWatcher(
-        config=config, db=db, source=source, notifier=notifier, sources=sources, llm=llm
+        config=config,
+        db=db,
+        source=source,
+        notifier=notifier,
+        sources=sources,
+        llm=llm,
+        finder=finder,
     )
     telegram = TelegramApi(config, notifier.client, token=config.telegram_bot_token)
     bot = Bot(config, watcher, telegram, llm=llm)
@@ -157,6 +174,8 @@ def main(
             return _cmd_recommend(watcher, config, args, out, err)
         if args.command == "seed":
             return _cmd_seed(watcher, args, out)
+        if args.command == "torrents":
+            return _cmd_torrents(watcher, config, args, out, err)
         if args.command == "where":
             return _cmd_where(watcher, config, args, out, err)
     except TvMazeError as exc:
@@ -326,6 +345,37 @@ def _cmd_run(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, o
         return EXIT_ERROR
     if report.polled.failed:
         return EXIT_ERROR
+    return EXIT_OK
+
+
+def _cmd_torrents(
+    watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO
+) -> int:
+    """Поиск раздач по требованию, а не по расписанию.
+
+    Поиск сам по себе бесплатный, но каждый запрос — это скрейпинг трекеров,
+    поэтому без `--force` уважается пауза между попытками.
+    """
+    if watcher.finder is None or not watcher.finder.available():
+        print(
+            "Поиск раздач не установлен: pip install torrent-search-mcp", file=err
+        )
+        return EXIT_ERROR
+    if args.force:
+        watcher.db._conn.execute("DELETE FROM torrent_searches")  # noqa: SLF001
+    results = watcher.hunt_torrents(dry_run=args.dry_run)
+    if not results:
+        print("Искать нечего: либо поиск выключен, либо пауза между попытками не прошла.", file=out)
+        return EXIT_OK
+    for item in results:
+        code = item.episode.code if item.episode else "?"
+        name = item.show.name if item.show else "?"
+        if item.found:
+            print(f"{name} {code}: нашлось {len(item.hits)}", file=out)
+            if args.dry_run:
+                print(as_text(watcher.torrent_message(item.show, item.episode)), file=out)
+        else:
+            print(f"{name} {code}: {item.detail}", file=out)
     return EXIT_OK
 
 

@@ -9,7 +9,7 @@ import pytest
 
 from series_watcher.config import Config
 from series_watcher.db import TELEGRAM_CHANNEL, Database
-from series_watcher.notify import Notifier, _keyboard, footer
+from series_watcher.notify import TVMAZE_CREDIT, Notifier, _keyboard, footer, footer_credit
 
 from conftest import FakeTelegram, load_fixture, store_show
 from series_watcher.models import EpisodeRecord
@@ -230,3 +230,16 @@ def test_ambiguous_pair_of_labels_is_rejected():
     разработчик решит это явно, а не получит молча две кнопки в Telegram."""
     with pytest.raises(TypeError, match="одна кнопка или две подписки"):
         _keyboard([("Не интересно", "reject 157")])
+
+
+def test_quiet_credit_is_a_footnote_not_a_list_item():
+    """Подпись обязана быть, но читаться должна как сноска, а не как пункт списка."""
+    text = footer_credit(["Отслеживаю 4:", "", "• Slow Horses — S06E06 — 22.10.2026 20:00"])
+    body, _, credit_line = text.rpartition("\n")
+    assert body.rstrip().endswith("20:00")
+    assert credit_line == f"<i>{TVMAZE_CREDIT}</i>"
+
+
+def test_quiet_credit_survives_empty_body():
+    assert footer_credit([]) == TVMAZE_CREDIT
+    assert footer_credit(["", ""]) == TVMAZE_CREDIT

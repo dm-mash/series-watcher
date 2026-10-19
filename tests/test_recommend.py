@@ -157,7 +157,7 @@ def test_recommendation_line_has_facts_from_api(parts):
     track(parts)
     pin(fake, [])
 
-    assert run(parts)[0].line() == "Реванш (Drama, Mystery) рейтинг 8.5"
+    assert run(parts)[0].line() == "Реванш Drama, Mystery · рейтинг 8.5"
 
 
 def test_tracked_shows_stay_in_the_pool_for_context(parts):

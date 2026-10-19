@@ -7,8 +7,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+import re
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from typing import Sequence
 
 from .catalog import explain, one_liner, pick_show, short_summary, title_from_description
@@ -33,19 +34,25 @@ from .nlu import (
     LIST,
     MARK_WATCHED,
     RECOMMEND,
+    DOWNLOAD,
     UNSUBSCRIBE,
     WHAT_NEW,
     WHERE_TO_WATCH,
     Intent,
     buttons_for,
 )
-from .notify import Notifier, footer
+from .finders import EpisodeFinder, FinderError, FinderUnavailable, TorrentHit, prune_magnet
+from .notify import Notifier, esc, footer, footer_credit
 from .sources import SourceAnswer, SourceSet
 from .models import ShowRecord
 from .schedule import ScheduleError, ScheduleSource
 
 #: Канал один: сервис рассчитан на одного пользователя в Telegram.
 NOTIFY_CHANNEL = TELEGRAM_CHANNEL
+
+#: Сколько серий ищем за один запуск: поиск — это скрейпинг трекеров, и двадцать
+#: запросов подряд подрядят уводить опрос с расписанием.
+MAX_TORRENT_SEARCHES_PER_RUN = 3
 
 #: Сколько рекомендаций показывать, если не сказано иное.
 DEFAULT_RECOMMEND_LIMIT = 5
@@ -109,6 +116,21 @@ class PollReport:
 
 
 @dataclass(frozen=True)
+class TorrentSearch:
+    """Итог одного поиска: что нашли и почему ничего не отправили."""
+
+    episode: Episode | None = None
+    show: Show | None = None
+    hits: tuple[TorrentHit, ...] = ()
+    stored: int = 0
+    detail: str = ""
+
+    @property
+    def found(self) -> bool:
+        return bool(self.hits)
+
+
+@dataclass(frozen=True)
 class RunReport:
     """Что сделал `run`: отправлено, отложено, не отправлено."""
 
@@ -117,10 +139,16 @@ class RunReport:
     deferred: int = 0
     skipped: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
+    #: Что нашлось по раздачам: пусто, если поиск выключен или нечего искать.
+    torrents: tuple[TorrentSearch, ...] = ()
 
     @property
     def quiet(self) -> bool:
         return self.deferred > 0
+
+    @property
+    def found_torrents(self) -> int:
+        return sum(1 for item in self.torrents if item.found)
 
 
 @dataclass(frozen=True)
@@ -132,6 +160,9 @@ class Reply:
     #: `((подпись, callback),)`. Писать просто пару нельзя: она неотличима от
     #: ряда из двух кнопок-подписей, и Telegram получает лишнюю кнопку.
     buttons: tuple[tuple[tuple[str, str], ...], ...] = ()
+    #: Текст собран с HTML-разметкой. Бот отправляет его как разметку, терминал
+    #: печатает как есть — там теги видны были бы мусором.
+    html: bool = False
 
 
 @dataclass
@@ -141,6 +172,7 @@ class SeriesWatcher:
     source: ScheduleSource
     notifier: Notifier | None = None
     sources: SourceSet | None = None
+    finder: EpisodeFinder | None = None  # тот же приём: протокол, а не конкретный трекер
     llm: object | None = None  # LLMClient | None; тип не импортируем, чтобы не было цикла
     #: Что дал последний `_store`: сколько эпизодов добавил и обновил.
     _last_counts: tuple[int, int] = (0, 0)
@@ -293,12 +325,17 @@ class SeriesWatcher:
         утаскивать за собой остальные. Отметка ставится только после успеха.
         """
         report = self.poll(now=now, lookback_hours=lookback_hours)
+        moment = report.checked_at
         if not report.due:
-            return RunReport(polled=report)
+            return RunReport(polled=report, torrents=self._hunt(dry_run=dry_run, now=moment))
 
         notifier = self.notifier
         if notifier is None:
-            return RunReport(polled=report, skipped=tuple("нет отправителя" for _ in report.due))
+            return RunReport(
+                polled=report,
+                skipped=tuple("нет отправителя" for _ in report.due),
+                torrents=self._hunt(dry_run=dry_run, now=moment),
+            )
 
         quiet = notifier.is_quiet(report.checked_at)
         if quiet and not dry_run:
@@ -327,7 +364,17 @@ class SeriesWatcher:
             deferred=len(report.due) if quiet else 0,
             skipped=tuple(skipped),
             failed=tuple(failed),
+            torrents=self._hunt(dry_run=dry_run, now=moment),
         )
+
+    def _hunt(self, *, dry_run: bool, now: datetime | None = None) -> tuple[TorrentSearch, ...]:
+        """Поиск раздач после опроса, но тихо: сбой здесь не должен ломать отчёт."""
+        if not self.config.torrent_search_enabled or self.finder is None:
+            return ()
+        try:
+            return tuple(self.hunt_torrents(now=now, dry_run=dry_run))
+        except Exception:  # noqa: BLE001 - поиск раздач не должен ронять опрос
+            return ()
 
     def digest(
         self, *, days: int = 7, now: datetime | None = None, recommend: bool = False
@@ -398,6 +445,158 @@ class SeriesWatcher:
         lines.extend(self.where_lines(item.show))
         return footer(lines)
 
+    def search_torrents(
+        self, item: DueEpisode, *, dry_run: bool = False, now: datetime | None = None
+    ) -> TorrentSearch:
+        """Искать раздачу одной серии и, если нашлось, сказать об этом один раз.
+
+        Повторные попытки допустимы: раздача могла появиться или «ожить» позже.
+        Но не чаще, чем `torrent_retry_hours`, и не дольше `torrent_retry_days`
+        после эфира — иначе трекеры заметят и перестанут отвечать.
+        """
+        show, episode = item.show, item.episode
+        finder = self.finder
+        if finder is None:
+            return TorrentSearch(detail="поиск раздач не настроен")
+        if not finder.available():
+            return TorrentSearch(detail="поиск раздач не установлен: pip install torrent-search-mcp")
+        try:
+            hits = list(
+                finder.search(show.name, episode.season, episode.number, limit=self.config.torrent_show_limit)
+            )
+        except (FinderUnavailable, FinderError) as exc:
+            return TorrentSearch(detail=str(exc))
+
+        if now is not None:
+            self.db.mark_torrent_search(episode.id, hits=len(hits), at=now)
+        else:
+            self.db.mark_torrent_search(episode.id, hits=len(hits))
+        alive = [hit for hit in hits if hit.alive]
+        if not alive:
+            return TorrentSearch(episode=episode, show=show, detail="пока ничего живого")
+
+        alive = self._with_magnets(alive[: self.config.torrent_show_limit])
+        stored = self.db.save_torrents(episode.id, alive)
+        message = self.torrent_message(show, episode)
+        if dry_run:
+            return TorrentSearch(episode=episode, show=show, hits=alive, stored=stored, detail="пробный запуск")
+
+        notifier = self.notifier
+        if notifier is None:
+            return TorrentSearch(episode=episode, show=show, hits=alive, stored=stored, detail="нет отправителя")
+        result = notifier.send_episode(episode.id, message, kind="torrent", html=True)
+        return TorrentSearch(
+            episode=episode, show=show, hits=alive, stored=stored, detail="" if result.sent else result.detail
+        )
+
+    def hunt_torrents(
+        self, *, now: datetime | None = None, dry_run: bool = False
+    ) -> list[TorrentSearch]:
+        """Обойти серии, вышедшие недавно, и поискать раздачи — один раз на серию.
+
+        Сначала самые свежие серии. Ограничение на число попыток за один запуск
+        держит время прогона в узде: поиск — это скрейпинг.
+        """
+        if self.finder is None or not self.config.torrent_search_enabled:
+            return []
+        checked = now or datetime.now(timezone.utc)
+        pending = self.db.episodes_to_search(
+            now=checked,
+            channel=TELEGRAM_CHANNEL,
+            retry_hours=self.config.torrent_retry_hours,
+            retry_days=self.config.torrent_retry_days,
+        )
+        results: list[TorrentSearch] = []
+        for show_id, episode in pending[:MAX_TORRENT_SEARCHES_PER_RUN]:
+            show = self.db.get_show(show_id)
+            if show is None:
+                continue
+            results.append(
+                self.search_torrents(DueEpisode(show=show, episode=episode), dry_run=dry_run, now=checked)
+            )
+        return results
+
+    def torrent_message(self, show: Show, episode: Episode) -> str:
+        """Человеческий текст находки: что нашли, где смотреть, куда качать.
+
+        Напоминание об ответственности обязательно: что с этим делать — решение
+        человека, а трекеры отдают раздачи третьих рук, без каких-либо гарантий.
+        """
+        rows = self.db.torrents_for(episode.id, limit=self.config.torrent_show_limit)
+        lines = self._torrent_lines(show, episode, rows)
+        lines.append("Скачивание — на ваше усмотрение и под вашу ответственность.")
+        # Атрибуции TVmaze здесь нет: в этом ответе нет данных TVmaze — ни описания,
+        # ни расписания, ни каталога. Раздачи и магнеты пришли с трекеров, а код
+        # серии человек назвал сам в запросе.
+        return plain(lines)
+
+    def _fill_missing_magnets(self, rows, *, episode_id: int):
+        """Дописать магнеты к сохранённым раздачам, где их ещё нет.
+
+        Раздачи могли попасть в базу до того, как магнеты научились тянуть, или
+        трекер не отдал их в прошлый раз. Спрашиваем один раз и дописываем в базу.
+        """
+        finder = self.finder
+        if finder is None:
+            return rows
+        filled = []
+        for row in rows:
+            if row.magnet:
+                filled.append(row)
+                continue
+            try:
+                magnet = finder.magnet(row.external_id)
+            except (FinderUnavailable, FinderError):
+                magnet = None
+            if magnet:
+                self.db.set_torrent_magnet(episode_id, row, magnet)
+                row = replace(row, magnet=magnet)
+            filled.append(row)
+        return filled
+
+    def _with_magnets(self, hits: list[TorrentHit]) -> list[TorrentHit]:
+        """Дописать магнеты к тем раздачам, что показываем.
+
+        Магнет тянут отдельным запросом и только для показа: держать его на
+        каждой находке незачем, а трекеры по умолчанию прячут ссылки. Не сработало
+        — не беда, покажем страницу на трекере.
+        """
+        finder = self.finder
+        if finder is None:
+            return hits
+        enriched: list[TorrentHit] = []
+        for hit in hits:
+            try:
+                magnet = finder.magnet(hit.torrent_id)
+            except (FinderUnavailable, FinderError):
+                magnet = None
+            enriched.append(replace(hit, magnet=magnet) if magnet else hit)
+        return enriched
+
+    def _torrent_lines(self, show: Show, episode: Episode, rows) -> list[str]:
+        """Раздачи списком: название с фактами, под ним — куда нажать.
+
+        Ссылка на трекер и магнет идут двумя отдельными строками: в Telegram
+        длинная ссылка не должна мешать читать название.
+        """
+        lines = [f"<b>Раздачи нашлись: {esc(show.name)} — {esc(episode.code)}</b>", ""]
+        for row in rows:
+            facts = []
+            if row.size:
+                facts.append(row.size)
+            if row.seeders:
+                facts.append(f"сидов {row.seeders}")
+            suffix = f" <i>({esc(', '.join(facts))})</i>" if facts else ""
+            lines.append(f"• <b>{esc(row.filename)}</b>{suffix}")
+            if row.url:
+                lines.append(f'  <a href="{esc(row.url)}">{esc(row.source)}</a>')
+            if row.magnet:
+                # Не ссылка: Telegram умеет кликабельными делать только http,
+                # https и tg — магнет он молча покажет как обычный текст.
+                # Поэтому моноширинным текстом: его удобно выделить и скопировать.
+                lines.append(f"  <code>{esc(prune_magnet(row.magnet))}</code>")
+        return lines
+
     def episode_brief(self, episode: Episode) -> str | None:
         """Короткое описание эпизока на русском. Считается один раз и лежит в базе."""
         # Смотрим в базу, а не в переданный объект: копия эпизода могла устареть
@@ -422,6 +621,7 @@ class SeriesWatcher:
             UNSUBSCRIBE: self._answer_unsubscribe,
             MARK_WATCHED: self._answer_mark_watched,
             RECOMMEND: self._answer_recommend,
+            DOWNLOAD: self._answer_where_torrent,
         }
         handler = handlers.get(intent.name)
         if handler is None:
@@ -454,16 +654,17 @@ class SeriesWatcher:
         items = self.list_shows(now=now)
         if not items:
             return Reply(text=plain(["Список отслеживаемых пуст."]))
-        lines = [f"Отслеживаю {len(items)}:"]
+        lines = [f"<b>Отслеживаю {len(items)}:</b>", ""]
         for item in items:
             if item.next_episode and item.next_episode.aired_at:
                 title = f" «{item.next_episode.name}»" if item.next_episode.name else ""
                 when = f"{item.next_episode.code}{title} — {_when(item.next_episode.aired_at, self.config)}"
             else:
                 when = "следующий эпизод не запланирован"
-            lines.append(f"{item.show.name} — {when}")
+            lines.append(f"• <b>{esc(item.show.name)}</b> — {esc(when)}")
+        lines.append("")
         lines.append("Сводка по дням: «дайджест».")
-        return Reply(text=footer(lines))
+        return Reply(text=footer_credit(lines), html=True)
 
     def _answer_where_to_watch(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if intent.show:
@@ -603,6 +804,78 @@ class SeriesWatcher:
         verb = "Уже отслеживается" if result.status == "exists" else "Добавлен"
         return Reply(text=footer([f"{verb}: {result.show.name}", result.show.url or ""]))
 
+    _EPISODE_CODE_IN_TEXT = re.compile(r"s(\d{1,4})e(\d{1,3})", re.I)
+
+    def _answer_where_torrent(self, intent: Intent, *, now: datetime | None = None) -> Reply:
+        """«Где скачать S02E05»: раздачи одной серии по запросу.
+
+        Явная просьба — она же единственная: пауза между фоновыми попытками её
+        не касается. Нашли — показываем и запоминаем, чтобы фон больше не
+        навязывался за эту серию.
+        """
+        finder = self.finder
+        if finder is None or not finder.available():
+            return Reply(text=plain(["Поиск раздач не установлен: pip install torrent-search-mcp"]))
+        tracked = self.db.list_shows()
+        if not tracked:
+            return Reply(text=plain(["Список отслеживаемых пуст — некого искать."]))
+
+        text = intent.show or ""
+        match = self._EPISODE_CODE_IN_TEXT.search(text)
+        name = re.sub(r"^для\s+", "", self._EPISODE_CODE_IN_TEXT.sub(" ", text).strip(" ,;-–"), flags=re.I)
+        found = self.db.find_shows(name) if name else []
+        if not found:
+            first = tracked[0].name
+            return Reply(
+                text=plain([f"Назовите сериал и серию, например «где скачать {first} S01E02»."])
+            )
+        show = found[0]
+
+        if match is None:
+            episode = self.db.next_episode(
+                show.id, after=datetime.now(timezone.utc) - timedelta(days=self.config.torrent_retry_days)
+            )
+            if episode is None or episode.aired_at is None:
+                return Reply(text=plain([f"У «{show.name}» недавно ничего не выходило."]))
+        else:
+            season, number = int(match.group(1)), int(match.group(2))
+            episode = next(
+                (
+                    item
+                    for item in self.db.list_episodes(show.id)
+                    if item.season == season and item.number == number
+                ),
+                None,
+            )
+            if episode is None:
+                return Reply(text=plain([f"В расписании «{show.name}» нет серии S{season:02d}E{number:02d}."]))
+
+        stored = self.db.torrents_for(episode.id, limit=self.config.torrent_show_limit)
+        if stored:
+            stored = self._fill_missing_magnets(stored, episode_id=episode.id)
+            return Reply(text=plain(self._torrent_lines(show, episode, stored)), html=True)
+
+        try:
+            hits = [
+                hit
+                for hit in finder.search(show.name, episode.season, episode.number, limit=self.config.torrent_show_limit)
+                if hit.alive
+            ]
+        except (FinderUnavailable, FinderError) as exc:
+            return Reply(text=plain([f"Поиск не удался: {exc}"]))
+        checked = now or datetime.now(timezone.utc)
+        self.db.mark_torrent_search(episode.id, hits=len(hits), at=checked)
+        if not hits:
+            return Reply(
+                text=plain([f"Живых раздач для «{show.name}» {episode.code} пока нет."])
+            )
+        hits = self._with_magnets(hits[: self.config.torrent_show_limit])
+        self.db.save_torrents(episode.id, hits)
+        return Reply(
+            text=plain(self._torrent_lines(show, episode, self.db.torrents_for(episode.id))),
+            html=True,
+        )
+
     def _answer_recommend(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         if not self.db.list_shows():
             return self.cold_start_reply()
@@ -613,24 +886,27 @@ class SeriesWatcher:
             return Reply(text=plain([f"Похожего на «{focus.name}» не нашлось."]))
         if not items:
             return Reply(text=plain(["Подходящих сериалов не нашлось."]))
-        title = f"Похожее на «{focus.name}»:" if focus is not None else "Похожее на ваш список:"
+        title = f"Похожее на «{esc(focus.name)}»:" if focus is not None else "Похожее на ваш список:"
         if len(items) < asked:
-            title += f" (просили {asked}, нашлось {len(items)})"
+            title += f" <i>(просили {asked}, нашлось {len(items)})</i>"
+        title = f"<b>{title}</b>"
         lines: list[str] = []
         buttons = []
         for item in items:
-            lines.append(f"• {item.line()} — {item.show.url or ''}".rstrip(" —"))
+            lines.append(f"• <b>{esc(item.show.title)}</b> — <code>{esc(item.line_detail())}</code>")
+            if item.show.url:
+                lines.append(f'  <a href="{esc(item.show.url)}">страница на TVmaze</a>')
             blurb = one_liner(item.show.title, item.show.summary, llm=self.llm)  # type: ignore[arg-type]
             if blurb:
-                lines.append("  " + blurb)
-            lines.append("  " + self._why(item))
+                lines.append("  " + esc(blurb))
+            lines.append("  " + esc(self._why(item)))
             buttons.append(
                 ((f"Отслеживать: {item.show.title}", f"add {item.show.external_id}"),)
             )
             buttons.append(
                 ((f"Не интересно: {item.show.title}", f"reject {item.show.external_id}"),)
             )
-        return Reply(text=footer([title, ""] + lines), buttons=tuple(buttons))
+        return Reply(text=footer_credit([title, ""] + lines), buttons=tuple(buttons), html=True)
 
     def _answer_about(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         """«Что за сериал X»: карточка из каталога, а не из нашего списка."""

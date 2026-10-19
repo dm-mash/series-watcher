@@ -39,8 +39,8 @@ class FakeTelegramApi(TelegramApi):
     def token(self):
         return self._token
 
-    def send_message(self, chat_id, text, *, buttons=()):
-        self.sent.append({"chat_id": chat_id, "text": text, "buttons": buttons})
+    def send_message(self, chat_id, text, *, buttons=(), html=False):
+        self.sent.append({"chat_id": chat_id, "text": text, "buttons": buttons, "html": html})
         return {"message_id": len(self.sent)}
 
     def get_updates(self, *, offset=None, timeout=25):
@@ -373,7 +373,7 @@ class FailingApi:
             return []
         return [text_update("дайджест", update_id=self.sent + 1)]
 
-    def send_message(self, chat_id, text, *, buttons=()):
+    def send_message(self, chat_id, text, *, buttons=(), html=False):
         from series_watcher.notify import NotifyError
 
         self.sent += 1
@@ -576,3 +576,29 @@ def test_tracking_button_subscribes_to_a_recommendation(parts, fake_tvmaze):
     bot.poll_once()
 
     assert [show.name for show in watcher.db.list_shows()] == [*before, label.split(": ", 1)[1]]
+
+
+def test_markup_reaches_telegram_unescaped_by_the_bot(parts, fake_tvmaze):
+    """Бот отправляет разметку как разметку: теги не должны попасть в текст ответа."""
+    from series_watcher.notify import esc
+
+    watcher, fake, _ = parts
+    bot, api = make_bot(watcher, [text_update("что нового")])
+    bot.poll_once()
+    # «что нового» — простой текст, разметки нет.
+    assert api.sent[0]["html"] is False
+
+    watcher.add_show_by_id(75194)
+    pin_schedule(fake)
+    bot, api = make_bot(watcher, [text_update("список")])
+    bot.poll_once()
+    assert api.sent[0]["html"] is True
+    assert "<b>" in api.sent[0]["text"]
+    assert esc("") == ""
+
+
+def test_html_is_escaped_in_buttons_too():
+    """Подпись кнопки с кавычками не должна ломать разметку в тексте."""
+    from series_watcher.notify import esc
+
+    assert esc('say "hi" & <bye>') == 'say "hi" &amp; &lt;bye&gt;'
