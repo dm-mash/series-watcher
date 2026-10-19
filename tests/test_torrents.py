@@ -464,10 +464,14 @@ def test_on_demand_search_asks_for_magnets(parts):
     finder.magnets = {"severance-s04e01": "magnet:?xt=urn:btih:DEADBEEF"}
     w = watcher(db, finder)
 
+    # id серии берём ДО поиска: после него серия попадает в паузу, и `due()`
+    # вернёт пуст�� список — а пустой он не от времени, а от настенных часов.
+    episode_id = due(db)[1].id
+
     reply = w.handle(rules("найди раздачи для Severance S04E01"))
 
     assert "magnet" in reply.text
-    assert db.torrents_for(due(db)[1].id)[0].magnet == "magnet:?xt=urn:btih:DEADBEEF"
+    assert db.torrents_for(episode_id)[0].magnet == "magnet:?xt=urn:btih:DEADBEEF"
 
 
 def test_cached_rows_get_missing_magnets_filled_in(parts):
