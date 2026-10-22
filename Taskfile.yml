@@ -7,6 +7,16 @@ vars:
     sh: 'pwd'
 
 tasks:
+  venv:
+    desc: Create .venv and install the package
+    cmds:
+      - |
+        if [ ! -x .venv/bin/python ]; then
+          python3 -m venv .venv
+        fi
+      - .venv/bin/pip install --upgrade pip
+      - .venv/bin/pip install -e .
+
   render:
     desc: Render systemd unit templates into deploy/rendered/
     cmds:
@@ -19,8 +29,8 @@ tasks:
         done
 
   install:
-    desc: Render and install units into /etc/systemd/system
-    deps: [render]
+    desc: Create venv, render and install units into /etc/systemd/system
+    deps: [venv, render]
     cmds:
       - sudo cp deploy/rendered/* /etc/systemd/system/
       - sudo systemctl daemon-reload
