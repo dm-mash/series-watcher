@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Sequence
 
 from .catalog import describe_title, explain, one_liner, pick_show, short_summary
@@ -381,41 +381,51 @@ class SeriesWatcher:
     def digest(
         self, *, days: int = 7, now: datetime | None = None, recommend: bool = False
     ) -> str:
-        """Сводка по ближайшим дням: что и когда выходит.
+        """Сводка по дням: сегодня, завтра, потом по дням недели.
 
-        С `recommend=True` добавляется подбор — так дайджест раз в неделю
-        отвечает на вопрос «что бы посмотреть», а не только «что когда выходит».
+        Группируем именно по дням: вопрос «когда что выходит» — про календарь, а
+        не про сериалы. Список по сериалам отвечал на другой вопрос и терялся
+        среди строк. С `recommend=True` добавляется подбор — так дайджест раз в
+        неделю отвечает и на «что бы посмотреть».
         """
         moment = now if now is not None else utcnow()
         horizon = moment + timedelta(days=days)
         rows = self.db.upcoming_episodes(since=moment, until=horizon)
-        lines = [f"{_plural_days(days)}:"]
-        by_show: dict[str, list[str]] = {}
+        by_day: dict[str, list[str]] = {}
         for show, episode in rows:
-            by_show.setdefault(show.name, []).append(
-                f"{_when(episode.aired_at, self.config)} — {episode.code}"
-                + (f" «{episode.name}»" if episode.name else "")
+            day = episode.aired_at.astimezone(self.config.tz).date().isoformat()
+            name = f" «{esc(episode.name)}»" if episode.name else ""
+            by_day.setdefault(day, []).append(
+                f"• <b>{esc(show.name)}</b> — <code>{esc(episode.code)}</code>{name}"
             )
-        if len(by_show) == 1 and not any(by_show.values()):
-            lines.append("пусто")
-        for name, items in by_show.items():
-            lines.append(name)
-            lines.extend(f"  {item}" for item in items)
-        if not by_show:
+        lines = [f"<b>{_plural_days(days)}</b>", ""]
+        if by_day:
+            today = moment.astimezone(self.config.tz).date()
+            for day in sorted(by_day):
+                lines.append(f"<b>{_day_heading(day, today)}</b>")
+                lines.extend(by_day[day])
+                lines.append("")
+        else:
+            # Подбор ниже всё равно нужен: «что бы посмотреть» не зависит от того,
+            # есть ли что-то в расписании.
             lines.append("пусто: расписание пустое или сериалов нет")
+            lines.append("")
         if recommend:
             items = self.recommend(limit=3)
-            lines.append("")
-            lines.append("Что бы посмотреть:")
+            lines.append("<b>Что бы посмотреть</b>")
             if not items:
-                lines.append("  подходящего не нашлось")
+                lines.append("подходящего не нашлось")
             for item in items:
-                lines.append(f"  • {item.line()} — {item.show.url or ''}".rstrip(" —"))
+                lines.append(f"• <b>{esc(item.show.title)}</b> — <code>{esc(item.line_detail())}</code>")
+                if item.show.url:
+                    lines.append(f'  <a href="{esc(item.show.url)}">страница на TVmaze</a>')
                 blurb = one_liner(item.show.title, item.show.summary, llm=self.llm)  # type: ignore[arg-type]
                 if blurb:
-                    lines.append("    " + blurb)
-                lines.append("    " + self._why(item))
-        return footer(lines)
+                    lines.append("  " + esc(blurb))
+                lines.append("  " + esc(self._why(item)))
+        while lines and not lines[-1]:
+            lines.pop()
+        return footer_credit(lines)
 
     def where_to_watch(self, show: Show, *, limit: int = 3) -> SourceAnswer:
         if self.sources is None:
@@ -649,7 +659,7 @@ class SeriesWatcher:
         return Reply(text=footer(lines))
 
     def _answer_digest(self, intent: Intent, *, now: datetime | None = None) -> Reply:
-        return Reply(text=self.digest(days=7, now=now))
+        return Reply(text=self.digest(days=7, now=now), html=True)
 
     def _answer_list(self, intent: Intent, *, now: datetime | None = None) -> Reply:
         """Отслеживаемые сериалы и ближайший эфир по каждому."""
@@ -1135,6 +1145,46 @@ def _episodes_for(episodes: Sequence[Episode], season: int | None, number: int |
         if (season is None or episode.season == season)
         and (number is None or episode.number == number)
     ]
+
+
+_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+_WEEKDAYS = (
+    "понедельник",
+    "вторник",
+    "среда",
+    "четверг",
+    "пятница",
+    "суббота",
+    "воскресенье",
+)
+
+
+def _day_heading(day: str, today: date) -> str:
+    """«Сегодня», «Завтра», а дальше — день недели с датой.
+
+    Месяцы свои, а не через `strftime`: локаль в контейнере английская, и в
+    русском ответе вылез бы «October».
+    """
+    if day == today.isoformat():
+        return "Сегодня"
+    if day == (today + timedelta(days=1)).isoformat():
+        return "Завтра"
+    when = date.fromisoformat(day)
+    return f"{_WEEKDAYS[when.weekday()].capitalize()}, {when.day} {_MONTHS[when.month - 1]}"
 
 
 def _plural_days(days: int) -> str:

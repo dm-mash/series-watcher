@@ -421,7 +421,7 @@ def test_list_button_and_phrase_show_tracked_shows(parts, frozen_now):
     text = api.sent[0]["text"]
     assert "Отслеживаю 1" in text
     assert "Ближайшие 7 дней" not in text
-    assert "S2026E193" in text
+    assert "S2026E196" in text
 
 
 def test_digest_still_gives_the_week(parts, frozen_now):
@@ -608,7 +608,7 @@ def test_html_is_escaped_in_buttons_too():
     """Подпись кнопки с кавычками не должна ломать разметку в тексте."""
     from series_watcher.notify import esc
 
-    assert esc('say "hi" & <bye>') == 'say "hi" &amp; &lt;bye&gt;'
+    assert esc('say "hi" & <bye>') == 'say &quot;hi&quot; &amp; &lt;bye&gt;'
 
 
 def test_strategy_can_be_named_in_the_phrase(parts, fake_tvmaze):
@@ -686,3 +686,20 @@ def test_crew_switch_says_it_ignores_the_mood(parts, fake_tvmaze, frozen_now):
     reply = watcher.repick_by_callback("pick crew|комедийное||")
 
     assert "правила не учитывают" in reply.text
+
+
+def test_digest_reply_carries_markup(parts, fake_tvmaze):
+    """«дайджест» в чате должен уходить разметкой, а не тегами в тексте.
+
+    Без флага разметки Telegram показывает `<b>` как обычные символы — сводка
+    приходила простынёй с тегами вместо выделений.
+    """
+    watcher, fake, _ = parts
+    pin_schedule(fake)
+
+    bot, api = make_bot(watcher, [text_update("дайджест")])
+
+    bot.poll_once()
+
+    assert api.sent[0]["html"] is True
+    assert "<b>" in api.sent[0]["text"]

@@ -44,19 +44,21 @@ def esc(text: object) -> str:
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+        .replace('"', "&quot;")
     )
 
 
 _TAG = re.compile(r"</?(?:b|i|code|s|u)>")
+_LINK = re.compile(r'<a href="([^"]*)">([^<]*)</a>')
 
 
 def as_text(html: str) -> str:
     """Разметка → plain text: так тот же ответ читается в терминале.
 
-    Теги снимаются, ссылки остаются: в терминале `magnet:?xt=…` полезнее слова
-    «magnet», а нажимать по ней всё равно нельзя.
+    Ссылки превращаются в «подпись (адрес)»: в терминале по ссылке не щёлкнешь,
+    а сам адрес там нужен. Остальные теги просто снимаются.
     """
-    return _TAG.sub("", html)
+    return _TAG.sub("", _LINK.sub(r"\2 (\1)", html))
 
 
 def footer(extra: Sequence[str] = ()) -> str:
@@ -70,7 +72,7 @@ def credit() -> str:
     Подпись обязательна, но она не должна спорить с ответом: раньше она стояла
     отдельным абзацем и читалась как ещё один пункт списка.
     """
-    return f"\n<i>{TVMAZE_CREDIT}</i>"
+    return f"<i>{TVMAZE_CREDIT}</i>"
 
 
 def footer_credit(extra: Sequence[str] = ()) -> str:

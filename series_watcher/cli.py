@@ -440,11 +440,13 @@ def _cmd_seed(watcher: SeriesWatcher, args: argparse.Namespace, out: TextIO) -> 
 
 
 def _cmd_digest(watcher: SeriesWatcher, config: Config, args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
-    text = watcher.digest(days=args.days, recommend=args.recommend)
+    digest = watcher.digest(days=args.days, recommend=args.recommend)
     if not args.send:
-        print(text, file=out)
+        # В терминал теги не нужны, а в Telegram — наоборот: без разметки сводка
+        # приходит простынёй без выделений.
+        print(as_text(digest), file=out)
         return EXIT_OK
-    result = watcher.notifier.send(text) if watcher.notifier else None
+    result = watcher.notifier.send(digest, html=True) if watcher.notifier else None
     if result is None or not result.sent:
         detail = result.detail if result else "нет отправителя"
         print(f"Дайджест не отправлен: {detail}", file=err)

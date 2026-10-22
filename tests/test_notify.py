@@ -9,7 +9,14 @@ import pytest
 
 from series_watcher.config import Config
 from series_watcher.db import TELEGRAM_CHANNEL, Database
-from series_watcher.notify import TVMAZE_CREDIT, Notifier, _keyboard, footer, footer_credit
+from series_watcher.notify import (
+    TVMAZE_CREDIT,
+    Notifier,
+    _keyboard,
+    as_text,
+    footer,
+    footer_credit,
+)
 
 from conftest import FakeTelegram, load_fixture, store_show
 from series_watcher.models import EpisodeRecord
@@ -243,3 +250,26 @@ def test_quiet_credit_is_a_footnote_not_a_list_item():
 def test_quiet_credit_survives_empty_body():
     assert footer_credit([]) == TVMAZE_CREDIT
     assert footer_credit(["", ""]) == TVMAZE_CREDIT
+
+
+def test_plain_text_keeps_the_link_address():
+    """Ссылка в терминале не щёлкнется, поэтому адрес должен остаться рядом."""
+    text = as_text('• <b>NCIS</b> <a href="https://tvmaze.com/shows/60/ncis">страница</a>')
+
+    assert text == "• NCIS страница (https://tvmaze.com/shows/60/ncis)"
+    assert "<" not in text and ">" not in text
+
+
+def test_send_passes_the_markup_flag_to_telegram():
+    """Разметка без флага `parse_mode` уезжает в Telegram тегами, а не вёрсткой."""
+    sent = {}
+
+    class Api:
+        def send_message(self, chat_id, text, *, buttons=(), html=False):
+            sent.update(text=text, html=html)
+            return {"message_id": 1}
+
+    api = Api()
+    api.send_message(42, "<b>жирно</b>", html=True)
+
+    assert sent == {"text": "<b>жирно</b>", "html": True}

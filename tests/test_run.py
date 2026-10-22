@@ -160,7 +160,8 @@ def test_digest_lists_upcoming_episodes(parts):
     assert "Beyond the Gates" in text
     assert "S2026E196" in text
     assert "S2026E193" not in text  # уже вышедшие в дайджест не попадают
-    assert text.endswith("Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com")
+    # Подпись с атрибуцией — курсивом и в конце, но она на месте.
+    assert text.rstrip().endswith("<i>Данные: TVmaze (CC BY-SA 4.0), https://www.tvmaze.com</i>")
 
 
 def test_digest_says_when_nothing_is_planned(parts):
@@ -194,3 +195,17 @@ def test_existing_link_is_used(parts, tmp_path):
     lines = watcher.where_lines(show)
 
     assert lines == ["где смотреть: ссылка — https://example.tv/x"]
+
+
+def test_digest_groups_by_day_not_by_show(parts):
+    """Вопрос «когда что выходит» — про календарь, а не про сериалы."""
+    watcher, _, _ = parts
+
+    text = watcher.digest(days=3, now=NOW)
+
+    # Заголовки — дни, а не сериалы: в трёхдневном окне тут только «Завтра»
+    # и пара дней недели.
+    assert "Завтра" in text
+    assert any(day in text for day in ("Понедельник", "Вторник", "Среда", "Четверг", "Пятница", "Суббота", "Воскресенье"))
+    # Один сериал не превращает сводку в простыню: он повторяется по дням.
+    assert text.count("Beyond the Gates") <= 3
