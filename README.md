@@ -311,30 +311,40 @@ series_watcher/
 
 ## Фоновая работа
 
-Готовые юниты лежат в `deploy/`. Пути в них абсолютные и под этот каталог —
-поправьте `WorkingDirectory` и `ExecStart` под свой путь.
+Готовые юниты лежат в `deploy/`. Это шаблоны: в них `${USER}` и `${PROJECT_DIR}`
+надо подставить под свою систему. Вручную — через `envsubst`:
 
 ```bash
-sudo cp deploy/series-watcher.service deploy/series-watcher.timer /etc/systemd/system/
-sudo cp deploy/series-watcher-weekly.service deploy/series-watcher-weekly.timer /etc/systemd/system/
+export USER=$(id -un) PROJECT_DIR=$(pwd)
+envsubst '$USER $PROJECT_DIR' < deploy/series-watcher.service > /tmp/series-watcher.service
+# ...и так же для остальных, затем sudo cp в /etc/systemd/system/
+```
+
+Или одной командой через Taskfile (нужен [task](https://taskfile.dev)):
+
+```bash
+task render && sudo task install && sudo task enable
+```
+
+`series-watcher.timer` опрашивает расписание каждый час и шлёт уведомления о
+новых эпизодах — с задержкой до часа, зато без пятнадцатиминутного тикания.
+`series-watcher-weekly.timer` раз в неделю, по понедельникам, отправляет дайджест
+с подбором.
+
+Разговорный бот — отдельный сервис: он держит long polling часами, поэтому
+живёт по правилам `Type=simple` с автоперезапуском.
+
+```bash
+sudo cp deploy/rendered/series-watcher-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now series-watcher.timer series-watcher-weekly.timer
-systemctl list-timers 'series-watcher*'
+sudo systemctl enable --now series-watcher-bot
 ```
 
-`series-watcher.timer` опрашивает расписание каждые 15 минут и шлёт уведомления о
-новых эпизодах. `series-watcher-weekly.timer` раз в неделю, по понедельникам,
-отправляет дайджест с подбором.
+Сначала остановите бота, запущенного вручную: два процесса будут драться за
+одни и те же обновления Telegram.
 
-Разговорный бот — отдельный процесс, ему нужен токен:
-
-```bash
-systemd-run --user --unit=series-watcher-bot \
-  /home/smash/series-watcher/.venv/bin/series-watcher bot
-```
-
-Ключи берутся из `.env` рядом с проектом: systemd их не читает, поэтому переменные
-окружения, нужные сервису, задаются в самом юните или в `EnvironmentFile`.
+Ключи и настройки берутся из `.env` рядом с проектом — приложение читает его
+само, поэтому в юнит ничего секретного не попадает.
 
 ## Тесты
 

@@ -9,3 +9,6 @@ data/
 
 # Состояние веб-интерфейса torrent-search-mcp: сессии Telegram-парсинга.
 authorized_tokens.json
+
+# Отрисованные из шаблонов юниты (генерируются задачей `task render`).
+deploy/rendered/

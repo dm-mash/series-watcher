@@ -1,12 +1,14 @@
 [Unit]
-Description=Series watcher: weekly digest with recommendations
+Description=Series watcher: weekly digest
 After=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/home/smash/series-watcher
-Environment=TZ=Europe/Moscow
-ExecStart=/home/smash/series-watcher/.venv/bin/series-watcher digest --days 7 --recommend --send
+User=${USER}
+WorkingDirectory=${PROJECT_DIR}
+ExecStart=${PROJECT_DIR}/.venv/bin/series-watcher digest --days 7 --recommend --send
+Nice=10
+IOSchedulingClass=idle
 
 [Install]
 WantedBy=multi-user.target

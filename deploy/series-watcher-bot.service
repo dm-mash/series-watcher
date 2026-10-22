@@ -1,0 +1,17 @@
+[Unit]
+Description=Series watcher: Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${USER}
+WorkingDirectory=${PROJECT_DIR}
+ExecStart=${PROJECT_DIR}/.venv/bin/series-watcher bot
+Restart=always
+RestartSec=30
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

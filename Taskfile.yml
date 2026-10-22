@@ -1,0 +1,36 @@
+version: '3'
+
+vars:
+  USER:
+    sh: 'echo "${USER:-$(id -un)}"'
+  PROJECT_DIR:
+    sh: 'pwd'
+
+tasks:
+  render:
+    desc: Render systemd unit templates into deploy/rendered/
+    cmds:
+      - mkdir -p deploy/rendered
+      - |
+        for f in deploy/*.service deploy/*.timer; do
+          [ -e "$f" ] || continue
+          env USER="{{.USER}}" PROJECT_DIR="{{.PROJECT_DIR}}" \
+            envsubst '$$USER $$PROJECT_DIR' < "$f" > "deploy/rendered/$(basename "$f")"
+        done
+
+  install:
+    desc: Render and install units into /etc/systemd/system
+    deps: [render]
+    cmds:
+      - sudo cp deploy/rendered/* /etc/systemd/system/
+      - sudo systemctl daemon-reload
+
+  enable:
+    desc: Enable and start the timers and the bot
+    cmds:
+      - sudo systemctl enable --now series-watcher.timer series-watcher-weekly.timer series-watcher-bot.service
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - .venv/bin/python -m pytest -q
