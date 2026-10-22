@@ -11,11 +11,21 @@ tasks:
     desc: Create .venv and install the package
     cmds:
       - |
+        if ! python3 -c 'import venv' 2>/dev/null; then
+          echo "Требуется модуль venv: sudo apt install python3-venv (или python3.x-venv)" >&2
+          exit 1
+        fi
+      - |
         if [ ! -x .venv/bin/python ]; then
+          rm -rf .venv
           python3 -m venv .venv
         fi
-      - .venv/bin/pip install --upgrade pip
-      - .venv/bin/pip install -e .
+      - |
+        if [ ! -x .venv/bin/pip ]; then
+          .venv/bin/python -m ensurepip --upgrade
+        fi
+      - .venv/bin/python -m pip install --upgrade pip
+      - .venv/bin/python -m pip install -e .
 
   render:
     desc: Render systemd unit templates into deploy/rendered/

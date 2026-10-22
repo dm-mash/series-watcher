@@ -12,6 +12,8 @@ CC BY-SA 4.0, ссылка на tvmaze.com обязательна: она сто
 ## Установка
 
 ```bash
+# На Debian/Ubuntu модуль venv идёт отдельным пакетом:
+#   sudo apt install python3-venv
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev]"
 cp .env.example .env      # необязательно: всё работает и без него
