@@ -97,16 +97,16 @@ def test_empty_list_suggests_add(cli):
     assert "TELEGRAM_BOT_TOKEN" in out
 
 
-def test_list_shows_next_episode_in_user_timezone(cli):
+def test_list_shows_next_episode_in_user_timezone(cli, fixed_now):
     cli("add", "--id", "75194")
 
     _, moscow, _ = cli("--tz", "Europe/Moscow", "list")
     _, new_york, _ = cli("--tz", "America/New_York", "list")
     _, utc, _ = cli("--tz", "UTC", "list")
 
-    assert "19.10.2026 21:00" in moscow
-    assert "19.10.2026 14:00" in new_york
-    assert "19.10.2026 18:00" in utc
+    assert "22.10.2026 21:00" in moscow
+    assert "22.10.2026 14:00" in new_york
+    assert "22.10.2026 18:00" in utc
     assert "время: Europe/Moscow" in moscow
 
 
